@@ -16,12 +16,13 @@ export function selectRelease(releases, channel, kind = "setup") {
     if (channel !== "beta" && (release.prerelease || semver.prerelease(version))) return [];
     if (!Array.isArray(release.assets)) return [];
     const name = "WiskHarness " + (kind === "portable" ? "Portable" : "Setup") + " " + version + ".exe";
-    const url = releaseRoot + "/download/" + release.tag_name + "/" + encodeURIComponent(name);
-    const asset = release.assets.find(item => item?.name === name && item.state === "uploaded" &&
-      item.browser_download_url === url && Number.isSafeInteger(item.size) && item.size > 0 &&
+    const publishedName = name.replaceAll(" ", ".");
+    const downloadRoot = releaseRoot + "/download/" + release.tag_name + "/";
+    const asset = release.assets.find(item => (item?.name === name || item?.name === publishedName) && item.state === "uploaded" &&
+      item.browser_download_url === downloadRoot + encodeURIComponent(item.name) && Number.isSafeInteger(item.size) && item.size > 0 &&
       item.size <= maxSize && /^sha256:[a-f0-9]{64}$/i.test(item.digest || ""));
     return [{ version, notes: releaseRoot + "/tag/" + release.tag_name,
-      asset: asset ? { name, url, size: asset.size, sha256: asset.digest.slice(7).toLowerCase() } : null }];
+      asset: asset ? { name, url: asset.browser_download_url, size: asset.size, sha256: asset.digest.slice(7).toLowerCase() } : null }];
   });
   return eligible.sort((a, b) => semver.rcompare(a.version, b.version))[0] ?? null;
 }
@@ -98,3 +99,4 @@ export function createUpdater({ version, directory, kind, fetcher = fetch }) {
   }
   return { status: () => state, check, download };
 }
+

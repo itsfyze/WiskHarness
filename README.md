@@ -11,6 +11,8 @@ WiskHarness is a self-hosted Windows desktop coding assistant. Agent mode uses O
 
 Unsigned builds can trigger Windows reputation checks. Compare the downloaded executable’s SHA-256 hash with the published checksums before opening it.
 
+GitHub displays dots in place of spaces in the executable names. Match each checksum by its Portable, Setup, or Uninstall label.
+
 To remove an installed copy of v0.7.1, use Windows Installed apps or the release’s standalone uninstall launcher. To remove the portable app, delete its executable.
 
 ## Local workflows

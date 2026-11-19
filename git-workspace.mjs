@@ -18,7 +18,8 @@ export async function workspaceGit(exe, workspace, action = "status", input = {}
   let root;
   try { root = (await git(["rev-parse", "--show-toplevel"])).trim(); }
   catch { return { repository: false }; }
-  if (path.relative(root, workspace)) throw new Error("Register the Git repository root to review its changes");
+  const [gitRoot, workspaceRoot] = await Promise.all([fs.realpath(root), fs.realpath(workspace)]);
+  if (path.relative(gitRoot, workspaceRoot)) throw new Error("Register the Git repository root to review its changes");
   let filterConfig = "";
   try { filterConfig = await git(["config", "--name-only", "--get-regexp", "^filter\\."]); }
   catch (error) { if (error.code !== 1) throw new Error("Could not verify Git filter configuration"); }
@@ -74,7 +75,7 @@ export async function workspaceGit(exe, workspace, action = "status", input = {}
   if (input.confirmed !== true) throw new Error("Confirm the index change");
   const target = path.join(workspace, name);
   const stat = await fs.lstat(target).catch(error => { if (error.code !== "ENOENT") throw error; return null; });
-  if (stat && (!stat.isFile() || stat.nlink !== 1 || path.relative(await fs.realpath(workspace), await fs.realpath(target)) !== name.split("/").join(path.sep))) {
+  if (stat && (!stat.isFile() || stat.nlink !== 1 || path.relative(workspaceRoot, await fs.realpath(target)) !== name.split("/").join(path.sep))) {
     throw new Error("Select a regular file inside this repository");
   }
   if (!stat && !(await git(["ls-files", "-z", "--", name])).split("\0").filter(Boolean).every(entry => entry === name)) {

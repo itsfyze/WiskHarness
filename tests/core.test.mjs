@@ -30,6 +30,18 @@ test("release selection handles stable, beta, numeric versions, drafts and untru
   assert.equal(selectRelease([wrong],"stable").asset,null);
   assert.equal(selectRelease([release("0.7.11",{assets:[]})],"stable").asset,null);
 });
+test("GitHub-normalized prerelease assets retain the original local filename", () => {
+  const published = release("0.7.1", { prerelease:true });
+  const asset = published.assets[0];
+  asset.name = "WiskHarness.Setup.0.7.1.exe";
+  asset.browser_download_url = "https://github.com/itsfyze/WiskHarness/releases/download/v0.7.1/" + asset.name;
+  assert.equal(selectRelease([published],"stable"),null);
+  assert.deepEqual(selectRelease([published],"beta").asset, {
+    name:"WiskHarness Setup 0.7.1.exe",url:asset.browser_download_url,size:fixture.length,sha256:digest
+  });
+  asset.browser_download_url += "?unexpected=1";
+  assert.equal(selectRelease([published],"beta").asset,null);
+});
 test("update checker handles current version, offline, malformed JSON and rate limits", async t => {
   const directory=tmp(t);
   for(const [fetcher,expected] of [
@@ -101,3 +113,4 @@ test("Obsidian updates managed current fields and keeps historical notes on retr
   checkpointObsidian(options);
   assert.equal(fs.readFileSync(project,"utf8"),before);
 });
+
