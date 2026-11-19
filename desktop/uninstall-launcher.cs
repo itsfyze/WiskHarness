@@ -7,29 +7,34 @@ using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("WiskHarness Uninstall")]
 [assembly: System.Reflection.AssemblyProduct("WiskHarness")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.1.0")]
-[assembly: System.Reflection.AssemblyVersion("0.7.1.0")]
 
 internal static class UninstallLauncher
 {
-    private const string Version = "0.7.1";
+    private const string Version = ReleaseVersion.Label;
     private const string Title = "WiskHarness Uninstall " + Version;
     private const string RegistryPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\b98c26f9-ab8f-597c-9238-bc16369cb8fb";
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        bool check = args.Length == 1 && args[0] == "--check";
+        bool silent = args.Length == 1 && args[0] == "--silent";
+        if (args.Length > 0 && !check && !silent)
+            return 2;
         try
         {
             ProcessStartInfo target = FindInstalledUninstaller();
+            if (check) return target == null ? 1 : 0;
             if (target == null)
             {
-                MessageBox.Show("No installed copy of WiskHarness " + Version +
-                    " was found. To remove the portable app, delete its portable EXE.",
-                    Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (!silent)
+                    MessageBox.Show("No installed copy of WiskHarness " + Version +
+                        " was found. To remove the portable app, delete its portable EXE.",
+                        Title, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return 1;
             }
 
+            if (silent) target.Arguments += " /S";
             using (Process process = Process.Start(target))
             {
                 process.WaitForExit();
@@ -38,8 +43,9 @@ internal static class UninstallLauncher
         }
         catch (Exception error)
         {
-            MessageBox.Show("Windows could not open the WiskHarness uninstaller.\n\n" + error.Message,
-                Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!silent && !check)
+                MessageBox.Show("Windows could not open the WiskHarness uninstaller.\n\n" + error.Message,
+                    Title, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 2;
         }
     }
@@ -74,7 +80,7 @@ internal static class UninstallLauncher
 
                     FileVersionInfo app = FileVersionInfo.GetVersionInfo(application);
                     if (app.ProductName != "WiskHarness" ||
-                        (app.ProductVersion != Version && app.ProductVersion != Version + ".0"))
+                        (app.FileVersion != Version && app.FileVersion != Version + ".0"))
                         continue;
 
                     return new ProcessStartInfo(filename, hive == RegistryHive.CurrentUser ? "/currentuser" : "/allusers")

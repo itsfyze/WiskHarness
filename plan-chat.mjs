@@ -32,13 +32,14 @@ export async function streamPlan({ endpoint, model, messages, signal, onText, co
     if (typeof event.message?.content === "string") onText(event.message.content);
     if (event.done === true) {
       const stats={};
-      for (const key of ["eval_count","eval_duration","prompt_eval_count","prompt_eval_duration","total_duration"]) {
-        if (Number.isFinite(event[key])) stats[key]=event[key];
+      for (const key of ["eval_count","eval_duration","prompt_eval_count","prompt_eval_duration","total_duration","load_duration"]) {
+        if (Number.isFinite(event[key]) && event[key]>=0) stats[key]=event[key];
       }
-      if (stats.eval_count && stats.eval_duration) stats.tokensPerSecond=stats.eval_count*1e9/stats.eval_duration;
+      if (Number.isFinite(stats.eval_count) && stats.eval_duration > 0) stats.tokensPerSecond=stats.eval_count*1e9/stats.eval_duration;
       onMetrics?.(stats);
       return event.done_reason || "end_turn";
     }
   }
   throw new Error("Ollama closed the chat stream before completing the turn");
 }
+

@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0e1013">
+  <meta name="theme-color" content="#111217">
   <title>WiskHarness</title>
   <link rel="icon" href="/wiskharness.png" type="image/png">
   <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/desktop-ui.css">
   <script type="module" src="/app.js"></script>
 </head>
 <body data-theme="graphite" data-motion="on">
@@ -17,8 +18,10 @@
         <div class="brand-copy"><strong>WiskHarness</strong></div>
         <button id="collapse-sidebar" class="icon-button collapse-button" aria-label="Toggle sidebar" title="Toggle sidebar"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM10 5v14"/></svg></button>
       </div>
-      <button class="new-session mode-trigger" id="mode-trigger" aria-haspopup="menu" aria-expanded="false">Plan</button>
-      <button class="new-session" id="new-session"><span class="new-plus">＋</span><span>New chat</span><kbd>Ctrl K</kbd></button>
+      <div class="sidebar-composer" role="group" aria-label="New chat">
+        <button class="new-session" id="new-session"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>New chat</span><kbd>Ctrl K</kbd></button>
+        <button class="new-session mode-trigger" id="mode-trigger" aria-haspopup="menu" aria-expanded="false">Plan</button>
+      </div>
       <nav id="navigation" class="navigation" aria-label="Workspace">
         <button data-view="chats" class="nav-item active"><svg viewBox="0 0 24 24"><path d="M20 11.4a8.1 8.1 0 0 1-8.2 8.1H5l-2 2V12A8.5 8.5 0 1 1 20 11.4Z"/></svg><span>Chats</span></button>
         <button data-view="agents" class="nav-item"><svg viewBox="0 0 24 24"><path d="m12 2 2.4 7.5L22 12l-7.6 2.5L12 22l-2.5-7.5L2 12l7.5-2.5L12 2Z"/></svg><span>Agents</span></button>
@@ -37,7 +40,7 @@
     <main class="main">
       <header class="topbar">
         <div class="breadcrumb"><button id="mobile-menu" class="icon-button" aria-label="Toggle navigation">☰</button><strong id="view-title">Chats</strong><span class="crumb-slash">/</span><span id="view-context">Workspace</span></div>
-        <div class="top-actions"><span class="connection-tag" id="top-connection">CONNECTING</span><button id="model-trigger" class="model-trigger" aria-haspopup="dialog" aria-expanded="false"><span class="model-glyph">✧</span><span id="model-label">Checking Ollama…</span><span class="chevron">⌄</span></button></div>
+        <div class="top-actions"><button class="badge warn" id="full-access-status" aria-haspopup="menu" aria-expanded="false" hidden>Full access</button><span class="connection-tag" id="top-connection">Connecting…</span><button id="model-trigger" class="model-trigger" aria-haspopup="dialog" aria-expanded="false" aria-label="Choose model"><svg class="model-glyph" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM3 9h2m-2 6h2m14-6h2m-2 6h2M9 3v2m6-2v2m-6 14v2m6-2v2"/></svg><span id="model-label">Checking Ollama…</span><svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button></div>
       </header>
       <div id="content" class="content">
         <div class="loading"><span class="loading-ring"></span>Loading WiskHarness…</div>

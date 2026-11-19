@@ -107,10 +107,33 @@ test("Obsidian updates managed current fields and keeps historical notes on retr
   assert.equal(result.saved,true);
   const before=fs.readFileSync(project,"utf8");
   assert.match(before,/^---\ntags: demo\n---\n\n# demo\n\n<!-- wiskharness-status:project -->/);
-  assert.match(before,/Runtime version:\*\* 0.7.0/);
+  assert.match(before,/Current version:\*\* 0.7.0/);
   assert.match(before,/## Prior history\nNothing removed\./);
   assert.match(fs.readFileSync(now,"utf8"),/Other project notes/);
   checkpointObsidian(options);
   assert.equal(fs.readFileSync(project,"utf8"),before);
 });
 
+
+test("Obsidian retries a partial checkpoint without duplicate history", t => {
+  const root=tmp(t),vault=path.join(root,"vault"),workspace=path.join(root,"example");
+  const now=path.join(vault,"Now.md"),project=path.join(vault,"Projects","example.md");
+  const options={vault,workspace,version:"0.7.2-beta.1",sessionId:"fixture",messageId:"edit",prompt:"Fix the fixture",
+    modified:["demo.js"],tools:[{title:"Edit demo.js",status:"completed"}],attemptedAt:"2026-11-19T06:15:00.000Z"};
+  assert.throws(()=>checkpointObsidian(options),/vault not found/);
+  fs.mkdirSync(vault);
+  fs.writeFileSync(now,"# Now\n\nUnrelated history.\n");
+  assert.deepEqual(checkpointObsidian({...options,tools:[]}),{saved:false,skipped:"non-substantive"});
+  fs.chmodSync(now,0o444);
+  try{assert.throws(()=>checkpointObsidian(options),error=>error.note===now&&error.code==="EACCES")}
+  finally{fs.chmodSync(now,0o666)}
+  assert.equal(fs.readFileSync(now,"utf8"),"# Now\n\nUnrelated history.\n");
+  const recovered=checkpointObsidian(options);
+  assert.equal(recovered.projectSaved,false);
+  assert.equal(recovered.nowSaved,true);
+  const verified=fs.readFileSync(project,"utf8");
+  assert.match(verified,/^# example\n\n<!-- wiskharness-status:project -->\n\*\*Last updated:\*\* 2026-11-19T06:15:00.000Z/);
+  assert.match(verified,/Verified progress:\*\* demo.js/);
+  assert.equal(verified.match(/local-agent-checkpoint:fixture:edit/g).length,1);
+  assert.match(fs.readFileSync(now,"utf8"),/Unrelated history/);
+});

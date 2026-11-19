@@ -100,3 +100,53 @@ dialog.workbench-dialog { width: min(720px, calc(100vw - 32px)); max-height: cal
 }
 
 
+
+.chevron{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s ease}
+[aria-expanded="true"]>.chevron{transform:rotate(180deg)}
+.mode-trigger{width:auto;align-self:flex-start;max-width:100%;min-height:31px;padding:5px 9px;gap:7px}
+.mode-trigger .mode-icon,.permission-trigger .mode-icon{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.composer-buttons{flex-wrap:wrap}
+.composer-model,.permission-trigger{display:inline-flex;align-items:center;gap:6px}
+.permission-trigger.full-access,#full-access-status{color:var(--danger);border-color:currentColor}
+#full-access-status[hidden]{display:none}
+.permission-rules .setting-row>span{min-width:0;overflow-wrap:anywhere}
+select.field{appearance:none;padding-right:33px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='%23878c98' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' viewBox='0 0 24 24'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-size:15px;background-position:right 10px center;background-repeat:no-repeat}
+.performance-trigger{display:block;max-width:100%;border:0;background:none;color:var(--muted);text-align:left;font:inherit;font-size:11px;padding:5px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.performance-trigger:hover{color:var(--text)}
+.performance-popover{width:min(410px,calc(100vw - 20px))}
+.performance-content{overflow:auto;padding:0 13px 10px;min-height:0}
+.performance-content h3{font-size:12px;margin:10px 0 6px;color:var(--text)}
+.performance-content meter{width:100%;accent-color:var(--accent)}
+.performance-warning{color:var(--danger);font-size:12px}
+.performance-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:5px 14px;line-height:1.45;font-size:12px}
+.performance-grid dt{color:var(--muted)}
+.performance-grid dd{margin:0;overflow-wrap:anywhere;text-align:right}
+.checkpoint-notice{margin-bottom:12px}
+.checkpoint-notice button{color:var(--danger)}
+.assistant-text{white-space:normal}
+.assistant-text> :first-child{margin-top:0}
+.assistant-text :is(p,ul,ol,blockquote,hr){margin:0.7em 0}
+.assistant-text :is(ul,ol){padding-inline-start:1.5em}
+.assistant-text li :is(ul,ol){margin:0.15em 0}
+.assistant-text :is(h1,h2,h3,h4,h5,h6){line-height:1.35;margin:1em 0 .4em;font-weight:680}
+.assistant-text h1{font-size:1.65em}.assistant-text h2{font-size:1.45em}.assistant-text h3{font-size:1.27em}
+.assistant-text h4{font-size:1.13em}.assistant-text h5{font-size:1.05em}.assistant-text h6{font-size:1em}
+.assistant-text hr{border:0;border-top:1px solid var(--border)}
+.assistant-text blockquote{border-inline-start:2px solid var(--accent);padding-inline-start:12px;color:var(--muted)}
+.assistant-text a[href]{color:var(--accent);text-decoration:underline}
+.assistant-text :not(pre)>code{border-radius:4px;padding:0.12em 0.35em;background:var(--soft);font-size:0.9em}
+.assistant-text .markdown-table{max-width:100%;overflow:auto;margin:0.9em 0}
+.markdown-table table{border-collapse:collapse;width:max-content;min-width:100%;max-width:initial}
+.markdown-table :is(th,td){padding:7px 10px;border:1px solid var(--border);min-width:100px;max-width:360px}
+.markdown-table th{background:var(--raised)}
+.markdown-code{margin:0.9em 0;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.markdown-code-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 9px;background:var(--raised);font-size:11px;color:var(--muted)}
+.markdown-code-bar span{overflow-wrap:anywhere}
+.assistant-text .markdown-code pre{margin:0;border-radius:0;max-height:400px;overflow-wrap:normal}
+.hljs-keyword,.hljs-selector-tag,.hljs-type,.hljs-built_in{color:var(--accent)}
+.hljs-string,.hljs-attr,.hljs-template-variable{color:var(--green)}
+.hljs-number,.hljs-literal,.hljs-symbol{color:var(--danger)}
+.hljs-comment,.hljs-quote{color:var(--muted);font-style:italic}
+.markdown-copy-field{position:fixed;opacity:0;pointer-events:none}
+@media (prefers-reduced-motion:reduce){.chevron{transition:none}}
+[data-motion="off"] .chevron{transition:none}

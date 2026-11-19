@@ -34,17 +34,121 @@ function safeLink(url, label) {
   return '<a class="btn" href="'+esc(url)+'" target="_blank" rel="noreferrer">'+esc(label)+'</a>';
 }
 
-export async function showSetup(onSaved) {
+function organizeSettings(panel) {
+  const sections = [...panel.querySelectorAll(":scope > .card")];
+  const layout = document.createElement("div");
+  layout.className = "settings-layout";
+  const links = document.createElement("nav");
+  links.className = "settings-links";
+  links.setAttribute("aria-label","Settings sections");
+  const stack = document.createElement("div");
+  stack.className = "settings-stack";
+  layout.append(links,stack);
+  panel.append(layout);
+  for (const section of sections) {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "nav-item";
+    link.textContent = section.querySelector("h2").textContent;
+    link.onclick = () => {
+      section.scrollIntoView({block:"start"});
+      section.focus({preventScroll:true});
+    };
+    section.removeAttribute("style");
+    section.tabIndex = -1;
+    links.append(link);
+    stack.append(section);
+  }
+}
+
+const gooseRuntimePanel = () => card("Goose runtime","Required for Agent Mode. Plan Mode can run without Goose.",
+  '<div data-goose-runtime><p role="status">Looking for Goose…</p></div>');
+
+export function gooseRuntimeLabel(runtime) {
+  if (!runtime) return "Checking";
+  if (runtime.error) return "Check failed";
+  if (!runtime.detected) return "Missing";
+  const source = {system:"Installed Goose",portable:"Portable Goose",custom:"Selected executable"}[runtime.source] || "Goose";
+  return source + (runtime.version ? " " + runtime.version : " detected");
+}
+
+async function mountGooseRuntime(panel, onChanged) {
+  const target = panel.querySelector("[data-goose-runtime]");
+  try {
+    let data = await request("/api/goose-runtime");
+    if (!target.isConnected) return;
+    const id = panel instanceof HTMLDialogElement ? "setup-goose" : "settings-goose";
+    target.innerHTML =
+      '<fieldset class="goose-controls"><legend class="sr-only">Goose runtime selection</legend>'+
+      '<div class="status-list" data-goose-summary></div>'+
+      '<label class="field-label" for="'+id+'-source">Preferred runtime</label>'+
+      '<select class="field" id="'+id+'-source"><option value="auto">Automatic</option><option value="system">Installed Goose</option>'+
+      '<option value="portable">Portable Goose</option><option value="custom">Choose an executable</option></select>'+
+      '<p class="inline-help">Automatic checks installed Goose first, then portable Goose.</p>'+
+      '<div data-goose-path hidden><label class="field-label" for="'+id+'-path">Goose executable path</label>'+
+      '<input class="field" id="'+id+'-path" placeholder="C:\\Tools\\Goose\\goose.exe" maxlength="1024">'+
+      '<p class="inline-help">Saving runs a version and compatibility check on this executable. Choose a file you trust.</p></div>'+
+      '<div class="workbench-actions"><button class="btn" type="button" data-goose-save>Save runtime</button>'+
+      '<button class="btn" type="button" data-goose-download>Download portable Goose</button></div>'+
+      '<div data-goose-confirm hidden><p class="inline-help">Download Goose '+esc(data.release.version)+' from its official GitHub release ('+
+      Math.round(data.release.bytes/1000000)+' MB) and store it in this WiskHarness profile.</p>'+
+      '<div class="workbench-actions"><button class="btn btn-primary" type="button" data-goose-install>Download and install</button>'+
+      '<button class="btn" type="button" data-goose-cancel>Cancel</button></div></div>'+
+      '<p class="inline-help" role="status" data-status></p></fieldset>';
+    const get = selector => target.querySelector(selector);
+    const controls = get("fieldset"), source = get("select"), file = get("input"), confirm = get("[data-goose-confirm]");
+    const download = get("[data-goose-download]"), install = get("[data-goose-install]");
+    const showPath = () => {get("[data-goose-path]").hidden = source.value !== "custom"};
+    function refresh() {
+      get("[data-goose-summary]").innerHTML = row("Selected runtime",gooseRuntimeLabel(data))+
+        row("Installed Goose",data.systemAvailable?"Detected":"Missing")+
+        row("Portable Goose",data.installing?"Downloading…":data.portableAvailable?"Installed":"Available to download");
+      source.value = data.preference;
+      file.value = data.customPath;
+      download.hidden = !data.installSupported;
+      download.textContent = data.portableAvailable ? "Reinstall portable Goose" : "Download portable Goose";
+      showPath();
+    }
+    async function act(route, body, pending, done) {
+      controls.disabled = true;
+      message(target,pending);
+      try {
+        data = await request(route,body);
+        if (!target.isConnected) return;
+        refresh();
+        confirm.hidden = true;
+        message(target,done);
+        onChanged?.();
+      } catch(error) {message(target,error.message)}
+      finally {controls.disabled = false}
+    }
+    refresh();
+    message(target,data.error||"");
+    source.onchange = showPath;
+    get("[data-goose-save]").onclick = () => act("/api/goose-runtime",{source:source.value,path:file.value.trim()},
+      "Checking runtime…","Goose preference saved.");
+    download.onclick = () => {confirm.hidden = false; install.focus()};
+    get("[data-goose-cancel]").onclick = () => {confirm.hidden = true; download.focus()};
+    install.onclick = () => act("/api/goose-runtime/install",{version:data.release.version},
+      "Downloading and verifying portable Goose…","Portable Goose installed. To use it explicitly, select it and save.");
+  } catch (error) {
+    target.querySelector("[role=status]").textContent = error.message;
+  }
+}
+
+export async function showSetup(onSaved, onGooseChanged) {
   const [setup, models] = await Promise.all([request("/api/setup"),request("/api/models").catch(()=>({models:[]}))]);
   const options = models.models.map(model => '<option value="'+esc(model.name)+'" '+(model.name===setup.model?"selected":"")+'>'+esc(model.name)+'</option>').join("");
   const dialog = modal("Set up WiskHarness", '<p>Choose a workspace and model for new chats. You can complete setup before adding a model.</p>'+
     card("Dependencies","Detected on this PC",'<div class="status-list" id="setup-results">'+row("Windows x64",setup.windows?"Supported":"Unsupported")+row("Ollama models",models.models.length)+'</div>'+
       '<div class="workbench-actions">'+button("setup-check","Run dependency checks")+safeLink("https://ollama.com/download/windows","Get Ollama")+safeLink("https://goose-docs.ai/docs/getting-started/installation/","Get Goose")+'</div>')+
+    gooseRuntimePanel()+
     '<form id="setup-form"><label class="field-label" for="setup-workspace">Workspace folder</label><input class="field" id="setup-workspace" required value="'+esc(setup.workspace)+'">'+
     '<label class="field-label" for="setup-model">Default model</label><select class="field" id="setup-model"><option value="">Choose later</option>'+options+'</select>'+
     '<label class="field-label" for="setup-vault">Obsidian vault folder (optional)</label><input class="field" id="setup-vault" value="'+esc(setup.vault)+'">'+
     '<p class="inline-help">Agent tools run with your Windows account. Review workspace and approval rules in Security &amp; permissions.</p><p role="status" data-status></p><button class="btn btn-primary">Save setup</button></form>');
   const form = dialog.querySelector("#setup-form");
+  void mountGooseRuntime(dialog,onGooseChanged);
   dialog.querySelector("#setup-check").onclick = async event => {
     const control = event.currentTarget;
     control.disabled = true;
@@ -54,7 +158,7 @@ export async function showSetup(onSaved) {
       dialog.querySelector("#setup-results").innerHTML = row("Windows x64",d.windows?"Supported":"Unsupported")+
         row("Ollama installation",d.ollamaInstalled?"Found":"Executable unavailable")+
         row("Ollama server",d.ollamaError||("Running · "+d.modelsCount+" models"))+
-        row("Goose CLI",d.gooseInstalled?"Installed":"Missing")+row("Goose ACP",d.acp?.ok?"Initialized":d.acp?.error||"Unavailable")+
+        row("Goose CLI",gooseRuntimeLabel(d.gooseRuntime))+row("Goose ACP",d.acp?.ok?"Initialized":d.acp?.error||"Unavailable")+
         row("PowerShell",d.checks.terminal?"Verified":"Unavailable")+row("Command Prompt",d.checks.cmd?"Verified":"Unavailable")+
         row("Default workspace",d.checks.filesystem?"Writable":"Unavailable")+row("Storage",d.storageError||"Writable")+
         row("Disk space",gib(d.freeBytes))+row("Obsidian",d.vault);
@@ -101,7 +205,20 @@ async function mountSecurity(panel) {
         const choices=[["ask","Ask every time"],["deny","Always deny"],...(key==="read"?[["allow","Allow eligible in-workspace reads"]]:[])];
         return '<div class="setting-row security-rule"><label for="tool-'+key+'">'+label+'</label><select class="field" id="tool-'+key+'">'+choices.map(([value,title])=>'<option value="'+value+'" '+(data.toolPolicies[key]===value?"selected":"")+'>'+title+'</option>').join("")+'</select></div>';
       }).join("")+
-      '<div class="workbench-actions"><button class="btn btn-primary">Save permissions</button>'+button("security-reset","Reset permissions")+'</div><p role="status" data-status>'+esc(notice)+'</p></form>';
+      '<div class="workbench-actions"><button class="btn btn-primary">Save permissions</button>'+button("security-reset","Reset permissions")+'</div></form>'+
+      '<h3>Saved workspace rules</h3><div class="permission-rules">'+
+      (data.permissionRules.map(rule=>'<div class="setting-row"><span><strong>'+esc(rule.effect==="allow"?"Always allow":"Always deny")+'</strong><small>'+esc(rule.label)+'</small><small>'+esc(rule.workspace)+'</small></span><div class="workbench-actions"><button class="btn btn-small" data-rule="'+esc(rule.id)+'" data-effect="'+(rule.effect==="deny"?"allow":"deny")+'" '+(rule.effect==="deny"&&!rule.canAllow?"disabled":"")+'>'+(rule.effect==="deny"?"Make allow":"Make deny")+'</button><button class="btn btn-small" data-rule="'+esc(rule.id)+'" data-effect="revoke">Revoke</button></div></div>').join("")||
+       '<p class="inline-help">No saved rules.</p>')+'</div><p role="status" data-status>'+esc(notice)+'</p>';
+    for(const control of target.querySelectorAll("[data-rule]"))control.onclick=async()=>{
+      control.disabled=true;
+      try{
+        const response=await fetch("/api/security/rules/"+encodeURIComponent(control.dataset.rule),{method:"PATCH",
+          headers:{"content-type":"application/json"},body:JSON.stringify({effect:control.dataset.effect})});
+        const result=await response.json();
+        if(!response.ok)throw new Error(result.error);
+        draw(result,control.dataset.effect==="revoke"?"Rule revoked.":"Rule updated.");
+      }catch(error){message(target,error.message);control.disabled=false}
+    };
     const scope=target.querySelector("#security-scope"),secrets=target.querySelector("#security-secrets");
     target.querySelector("form").onsubmit=async event=>{
       event.preventDefault();
@@ -113,7 +230,10 @@ async function mountSecurity(panel) {
       }catch(error){message(target,error.message)}
     };
     target.querySelector("#security-reset").onclick=async()=>{
-      try{draw(await request("/api/security",{reset:true}),"Defaults restored. Temporary approvals cleared.")}
+      try{
+        draw(await request("/api/security",{reset:true}),"Defaults restored. Saved and temporary rules cleared.");
+        window.dispatchEvent(new Event("wisk-security-changed"));
+      }
       catch(error){message(target,error.message)}
     };
   }
@@ -261,13 +381,43 @@ async function mountInstructions(panel){
   }catch(error){target.textContent=error.message}
 }
 
-export async function mountSettings(panel, onSaved, onModelsChanged) {
+async function mountVault(panel){
+  const target=panel.querySelector("#vault-settings");
+  try{
+    const initial=await request("/api/obsidian");
+    target.innerHTML='<form><label class="field-label" for="obsidian-vault">Vault folder</label><div class="field-row"><input class="field" id="obsidian-vault" placeholder="Enter an absolute folder path">'+button("vault-disable","Disable")+'<button class="btn btn-primary">Save</button></div><p role="status" data-status></p></form>';
+    const input=target.querySelector("input");
+    input.value=initial.vault||"";
+    const controls=[...target.querySelectorAll("input,button")];
+    if(initial.managed){
+      controls.forEach(control=>control.disabled=true);
+      return message(target,"This vault is managed by the launch environment.");
+    }
+    async function save(vault){
+      controls.forEach(control=>control.disabled=true);
+      try{
+        const result=await request("/api/obsidian",{vault});
+        input.value=result.vault||"";
+        message(target,result.vault?"Vault saved.":"Obsidian checkpoints disabled.");
+      }catch(error){message(target,error.message)}
+      finally{controls.forEach(control=>control.disabled=false)}
+    }
+    target.querySelector("form").onsubmit=event=>{event.preventDefault();void save(input.value.trim())};
+    target.querySelector("#vault-disable").onclick=()=>void save(null);
+  }catch(error){target.textContent=error.message}
+}
+
+export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChanged) {
   if (!panel) return;
   panel.querySelector(".page-heading-row").insertAdjacentHTML("afterend",
+    gooseRuntimePanel()+
     card("Security & permissions","Agent approvals and local data protection",'<div id="security-policy">Loading permissions…</div>')+
     card("Providers & models","Local endpoints and API access",'<div id="provider-settings">Loading providers…</div>')+
-    card("Setup and diagnostics","Local dependencies, workspace and optional memory",button("open-setup","Open setup")));
-  panel.querySelector("#open-setup").onclick = () => void showSetup(onSaved);
+    card("Setup and diagnostics","Local dependencies, workspace and optional memory",button("open-setup","Open setup"))+
+    card("Obsidian","Optional checkpoints for Agent work",'<div id="vault-settings">Loading Obsidian settings…</div>'));
+  void mountVault(panel);
+  panel.querySelector("#open-setup").onclick = () => void showSetup(onSaved,onGooseChanged);
+  void mountGooseRuntime(panel,onGooseChanged);
   void mountSecurity(panel);
   void mountProviders(panel,onModelsChanged);
   panel.insertAdjacentHTML("beforeend",
@@ -286,6 +436,7 @@ export async function mountSettings(panel, onSaved, onModelsChanged) {
     try {const d=await request("/api/diagnostics");output.textContent=d.tailscaleInstalled?"Tailscale · "+d.tailscale:"Tailscale was not found."}
     catch(error){output.textContent=error.message}
   };
+  organizeSettings(panel);
   const target=panel.querySelector("#update-settings");
   async function draw(data) {
     if (!target.isConnected) return;
@@ -336,7 +487,7 @@ export async function notifyUpdate(onSettings) {
 export async function mountModelDiagnostics(panel) {
   if (!panel) return;
   panel.querySelector(".page-heading-row").insertAdjacentHTML("afterend",
-    card("Model diagnostics","Latest measured Plan turn",'<div id="model-diagnostics">Loading measurements…</div>'));
+    card("Model diagnostics","Latest measured turn",'<div id="model-diagnostics">Loading measurements…</div>'));
   const container=panel.querySelector("#model-diagnostics");
   try {
     const result=await request("/api/models/diagnostics");
@@ -356,8 +507,11 @@ export async function mountModelDiagnostics(panel) {
       '<div class="status-list">'+row("System RAM in use",result.systemMemory?gib(result.systemMemory.used)+" / "+gib(result.systemMemory.total):"Unavailable")+'</div><p role="status" data-status></p>';
     container.querySelector("#usage-measurements").onchange=async event=>{
       const control=event.currentTarget;
-      try{await request("/api/models/measurements",{enabled:control.checked});message(container,"Usage measurement preference saved. Refresh the view for updated readings.")}
+      control.disabled=true;
+      try{await request("/api/models/measurements",{enabled:control.checked});message(container,"Usage measurement preference saved.");
+        window.dispatchEvent(new CustomEvent("wisk-measurements-changed",{detail:control.checked}));}
       catch(error){control.checked=!control.checked;message(container,error.message)}
+      finally{control.disabled=false}
     };
     container.querySelector("#context-save").onclick=async()=>{
       try{await request("/api/models/context",{contextTokens:Number(container.querySelector("#model-context").value)||null});message(container,"Context preference saved.")}

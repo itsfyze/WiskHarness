@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { randomBytes } = require('node:crypto');
@@ -96,7 +96,7 @@ function createWindow(ready) {
     height: 940,
     minWidth: 1000,
     minHeight: 660,
-    backgroundColor: '#0e1013',
+    backgroundColor: '#111217',
     title: 'WiskHarness',
     icon: path.join(__dirname, 'assets', 'wiskharness-256.png'),
     show: false,
@@ -116,12 +116,21 @@ function createWindow(ready) {
     callback({requestHeaders: sameOrigin ? {...details.requestHeaders, 'X-WiskHarness-Session': nonce} : details.requestHeaders});
   });
   window.once('ready-to-show', () => window.show());
+  let confirmingExternal = false;
   window.webContents.setWindowOpenHandler(({url}) => {
     try {
       const target = new URL(url);
       const official = target.origin === 'https://github.com' && target.pathname.startsWith('/itsfyze/WiskHarness/releases/');
       if (official || ['https://ollama.com','https://goose-docs.ai','https://tailscale.com'].includes(target.origin)) {
         void shell.openExternal(target.href).catch(error => log(error.message));
+      } else if (!confirmingExternal && target.href.length<=2048 && !target.username && !target.password &&
+          ['http:','https:'].includes(target.protocol)) {
+        confirmingExternal = true;
+        void dialog.showMessageBox(window,{type:'question',title:'Open external link',
+          message:'Open this address in your browser?',detail:target.href,buttons:['Cancel','Open link'],
+          defaultId:0,cancelId:0}).then(({response})=>{
+            if(response===1)return shell.openExternal(target.href);
+          }).catch(error=>log(error.message)).finally(()=>{confirmingExternal=false;});
       }
     } catch {}
     return { action: 'deny' };

@@ -1,11 +1,14 @@
-import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace } from "./workbench.js";
+import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace, gooseRuntimeLabel } from "./workbench.js";
 import {bindPopovers, closePopover, openPopover, refreshPopover} from "./popover.js";
+import {renderMarkdown} from "./markdown.js";
+import {mountPerformance} from "./performance.js";
+import {mountPermissions,showCheckpoint} from "./chat-controls.js";
 
 const $=s=>document.querySelector(s),$$=s=>Array.from(document.querySelectorAll(s));
 const esc=x=>String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const TKEY="local-agent-ui-theme-v4",MKEY="local-agent-motion-v4",SKEY="local-agent-selected-session";
 const THEMES=[
-["graphite","Graphite","Classic dark","#0e1013","#141619","#24292f","#adbcfa"],
+["graphite","Graphite","Cool charcoal","#111217","#17181f","#242630","#a9bcff"],
 ["midnight","Midnight","Deep navy","#09101c","#101a2a","#21304a","#99baff"],
 ["oled","OLED Black","High contrast","#050507","#0c0c10","#1d1d24","#c3b5ff"],
 ["forest","Forest","Muted green","#0b1412","#111e19","#22372c","#a5dfbc"],
@@ -15,6 +18,8 @@ const THEMES=[
 ];
 const state={view:"chats",sessions:[],session:null,modelData:null,health:null,projects:[],busy:false,activeRun:null};
 const MODE_KEY="local-agent-mode";
+const chevron='<svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+const pendingVisibility=new Set();
 const modeNames={plan:"Plan",agent:"Agent"};
 const modeDescriptions={plan:"Chat, brainstorm, and plan",agent:"Code, execute, and build"};
 const modeIcon=mode=>'<svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">'+(mode==="plan"?'<path d="M5 4h14v13H9l-4 4zM9 8h6m-6 4h6"/>':'<path d="m5 7 5 5-5 5m8 0h6"/>')+'</svg>';
@@ -78,10 +83,11 @@ function renderTop(){
   $("#view-title").textContent=state.view[0].toUpperCase()+state.view.slice(1);
   $("#view-context").textContent=state.view==="chats"?(state.session?.title||"Workspace"):shortPath(state.health?.preflight?.workspace||"Local workspace");
   const mode=currentMode();
-  $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong><span class="chevron" aria-hidden="true">⌄</span>';
+  $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong>'+chevron;
   const model=modelIdentity(selectedModel());
   $("#model-label").textContent=model.label||"Choose model";
   $("#model-trigger").title=$("#model-label").textContent;
+  $("#model-trigger").setAttribute("aria-label",model.label?"Choose model, current model "+model.label:"Choose model");
   const ok=!!(state.health?.ollama&&(mode==="plan"||state.health?.goose));
   $("#connection-dot").classList.toggle("online",ok);$("#connection-text").textContent=ok?"Local runtime online":"Runtime unavailable";
   $("#top-connection").textContent=state.busy?"Running":model.cloud?"Cloud · "+model.provider:model.provider!=="Ollama"?"Local · "+model.provider:state.health?.ollama?"Ollama connected":"Ollama offline";
@@ -271,10 +277,17 @@ function renderChats(){
   const s=state.session,mode=currentMode(),plan=mode==="plan",running=runInView();
   const model=modelIdentity(selectedModel()).label||"Choose model";
   const placeholder=plan?"Ask a question or outline a plan…":"Describe the task…";
-  $("#content").innerHTML='<div class="chat-view '+mode+'"><div class="chat-main"><div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div><div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="2" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+(plan?"":'<button class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>')+'<button class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>⌄</button><span class="badge" id="save-status">'+(running?"Running":s?"Saved on PC":"Ready")+'</span><button class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+'</button></div></div></div></div>'+(plan?"":'<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>')+'</div>';
+  $("#content").innerHTML='<div class="chat-view '+mode+'"><div class="chat-main"><div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div><div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="2" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+(plan?"":'<button class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>')+'<button class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>'+chevron+'</button>'+(plan?"":'<button class="btn btn-small permission-trigger" id="permission-trigger" aria-haspopup="menu" aria-expanded="false"></button>')+'<span class="badge" id="save-status">'+(running?"Running":s?"Saved on PC":"Ready")+'</span><button class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+'</button></div><div id="composer-performance"></div></div></div></div>'+(plan?"":'<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>')+'</div>';
   const body=$("#chat-body");
   if(!s?.messages?.length){
-    body.innerHTML='<div class="chat-empty"><h1>'+(plan?"What are you planning?":"What should the agent work on?")+'</h1><p>'+(plan?"Ask a question, discuss an approach or draft a plan.":"Describe a coding task or ask the agent to inspect the workspace.")+'</p></div>';
+    const missingGoose=!plan&&state.health&&!state.health.goose;
+    body.innerHTML='<div class="chat-empty"><span class="chat-mode-mark">'+modeIcon(mode)+modeNames[mode]+' Mode</span><h1>'+
+      (plan?"What are you planning?":"What should the agent work on?")+'</h1><p>'+
+      (plan?"Ask a question, compare approaches, or work out a plan before editing files.":"Describe a coding task in your workspace. Review tool requests as the agent works.")+'</p>'+
+      (missingGoose?'<div class="runtime-notice"><p>'+esc(state.health.gooseRuntime?.error||"Agent Mode needs a compatible Goose executable.")+
+      '</p><button type="button" class="btn btn-small" id="configure-goose">Configure Goose</button></div>':'')+'</div>';
+    const configure=$("#configure-goose");
+    if(configure)configure.onclick=()=>changeView("settings");
   }else{
     const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",error:"Error"};
     body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
@@ -286,6 +299,9 @@ function renderChats(){
     scrollChat();
   }
   updateInspector();
+  if(s?.mode==="agent"&&(s.memoryCheckpoint?.error||s.memoryCheckpoint?.contextError))notifyCheckpoint(s.id,s.memoryCheckpoint);
+  void mountPermissions($("#permission-trigger"),api,post,toast);
+  updatePerformance();
   const mobile = matchMedia("(max-width: 960px)").matches;
   if(!plan&&s){
     let tools=$("#chat-inspector");
@@ -311,13 +327,25 @@ function renderChats(){
   input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!send.disabled&&!runInView())runPrompt()}};
   input.oninput=e=>{e.target.style.height="auto";e.target.style.height=Math.min(190,e.target.scrollHeight)+"px";drafts.set(draftKey(),e.target.value)};
 }
-function displayAnswer(element,text){
-  element.replaceChildren();
-  const parts=String(text||"").split(/^\x60{3}[^\n]*\n?/m);
-  for(const [index,part] of parts.entries()){
-    if(index%2){const code=document.createElement("pre");code.textContent=part.trimEnd();element.append(code)}
-    else if(part)element.append(document.createTextNode(part));
-  }
+function updatePerformance(){
+  const root=$("#composer-performance");
+  if(!root)return;
+  const model=selectedModel(),identity=modelIdentity(model);
+  mountPerformance(root,{
+    model,identity,sessionId:state.session?.id,
+    metrics:state.performance,running:runInView()&&state.busy,
+    connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()==="plan"||state.health?.goose):
+      state.providerData?.providers.find(item=>item.name===identity.provider||item.id===identity.provider)?.connected,
+    onOpen:()=>api("/api/models/diagnostics")
+  });
+}
+function notifyCheckpoint(id,checkpoint){
+  if(state.session?.id!==id||!$("#chat-body"))return;
+  showCheckpoint($("#chat-body"),checkpoint,async()=>{
+    const updated=(await post("/api/sessions/"+sid(id)+"/checkpoint/retry",{})).checkpoint;
+    if(state.session?.id===id)state.session.memoryCheckpoint=updated;
+    return updated;
+  },()=>{rememberDraft();changeView("settings");$("#report-preview")?.click()},toast);
 }
 function toolRow(tool){
   const row=document.createElement("details");
@@ -346,7 +374,7 @@ function appendMessage(m){
     const icon=document.createElement("div");icon.className="assistant-icon";icon.innerHTML=modeIcon(currentMode());
     const content=document.createElement("div");content.className="assistant-body";
     const byline=document.createElement("div");byline.className="assistant-byline";byline.textContent="WiskHarness";
-    const answer=document.createElement("div");answer.className="assistant-text";displayAnswer(answer,m.text);
+    const answer=document.createElement("div");answer.className="assistant-text";renderMarkdown(answer,m.text,{streaming:m.status==="streaming"});
     const activity=document.createElement("details");activity.className="message-tools";activity.hidden=currentMode()==="plan"||!(m.tools?.length);
     activity.innerHTML='<summary>Tool activity (<span class="tool-count">'+(m.tools?.length||0)+'</span>)</summary><div class="tool-list"></div>';
     for(const t of m.tools||[])activity.querySelector(".tool-list").append(toolRow(t));
@@ -400,7 +428,7 @@ async function runPrompt(){
     }finally{state.starting=false}
   }
   drafts.delete(draftKey());drafts.delete(currentMode());
-  state.activeRun={sessionId:recordId,record};state.busy=true;
+  state.activeRun={sessionId:recordId,record};state.performance=null;state.busy=true;
   record.status="running";
   const stamp=Date.now();
   const user={id:"optimistic-user-"+stamp,role:"user",text:prompt,createdAt:new Date().toISOString()};
@@ -408,12 +436,20 @@ async function runPrompt(){
   state.session.messages.push(user,reply);
   if(state.session.title==="New chat")state.session.title=prompt.replace(/\s+/g," ").slice(0,75);
   renderTop();renderChats();scrollChat();
-  let remainder="",completed=false;
+  let remainder="",completed=false,markdownTimer=null;
+  function renderStream(){
+    markdownTimer=null;
+    const element=document.querySelector('[data-message="'+reply.id+'"] .assistant-text');
+    const scroll=$("#chat-scroll");
+    if(!element||!scroll)return;
+    const atEnd=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<90;
+    renderMarkdown(element,reply.text,{streaming:!completed});
+    if(atEnd)scrollChat();
+  }
   function onEvent(event){
     if(event.type==="text"){
       reply.text+=event.text||"";
-      const el=document.querySelector('[data-message="'+reply.id+'"] .assistant-text');
-      if(el){el.textContent=reply.text;scrollChat()}
+      if(markdownTimer===null&&state.session?.id===recordId)markdownTimer=setTimeout(renderStream,100);
     }else if(event.type==="tool"){
       const t=event.update||{},idx=reply.tools.findIndex(x=>x.id===t.id);
       if(idx>=0)reply.tools[idx]=t;else reply.tools.push(t);
@@ -427,7 +463,11 @@ async function runPrompt(){
     }else if(event.type==="task"){record.task=event.task;}
     else if(event.type==="permission")showPermission(event);
     else if(event.type==="permission-resolved")dismissPermission(event.requestId);
-    else if(event.type==="memory"&&!event.saved){toast(event.error||"Project notes could not be saved","error")}
+    else if(event.type==="metrics"){state.performance=event.metrics;updatePerformance()}
+    else if(event.type==="memory"){
+      record.memoryCheckpoint=event;
+      if(event.error||event.contextError)notifyCheckpoint(recordId,event);
+    }
     else if(event.type==="error"){reply.status="error";reply.error=event.message;toast(event.message,"error")}
     else if(event.type==="done"){reply.status=event.session.status;completed=true}
     else if(event.type==="start"){if(runInView())$("#save-status")?.replaceChildren(document.createTextNode("Running"));record.status="running"}
@@ -450,15 +490,23 @@ async function runPrompt(){
     }
   }catch(e){reply.status="error";reply.error=e.message;toast(e.message,"error")}
   finally{
+    if(markdownTimer!==null)clearTimeout(markdownTimer);
+    renderStream();
+    const scroll=$("#chat-scroll"),knownScroll=scroll?.scrollTop;
+    const following=scroll&&scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<90;
     state.activeRun=null;state.busy=false;
     try{
       const record=(await api("/api/sessions/"+sid(recordId))).session;
       rememberDraft();
       if(state.session?.id===recordId)state.session=record;
       await Promise.all([loadSessions(),loadHealth()]);
-      if(state.view==="chats")renderChats();
+      if(state.view==="chats"&&state.session?.id===recordId){
+        renderChats();
+        if(!following&&knownScroll!==undefined)$("#chat-scroll").scrollTop=knownScroll;
+        else scrollChat();
+      }
     }catch(e){toast("Could not verify the saved session: "+e.message,"error")}
-    if(state.view==="chats"){$("#chat-input")?.focus();scrollChat()}
+    if(state.view==="chats"&&state.session?.id===recordId&&!document.activeElement?.closest("dialog,.popover"))$("#chat-input")?.focus({preventScroll:true});
   }
 }
 async function cancelRun(){
@@ -489,21 +537,38 @@ function showPermission(event){
   const policy=document.createElement("p");
   policy.textContent="Operation · "+event.category+" · "+(event.policy==="allow"?"Allow eligible reads":"Ask every time");
   dialog.append(policy);
-  async function answer(optionId,remember=false){
+  async function answer(optionId,{remember=false,persistent}={}){
     for(const button of actions.children)button.disabled=true;
-    try{await post("/api/agent/permission",{requestId:event.requestId,optionId,remember});dismissPermission(event.requestId)}
-    catch(e){dismissPermission(event.requestId);toast(e.message,"error")}
+    try{await post("/api/agent/permission",{requestId:event.requestId,optionId,remember,persistent});dismissPermission(event.requestId)}
+    catch(e){toast(e.message,"error");for(const button of actions.children)button.disabled=false}
   }
   const deny=document.createElement("button");deny.className="btn btn-danger";deny.textContent="Deny";deny.autofocus=true;
   const reject=event.options?.find(choice=>choice.kind==="reject_once");
   deny.onclick=()=>answer(reject?.optionId??null);actions.append(deny);
+  if(event.ruleScope){
+    const scope=document.createElement("p");
+    scope.textContent="Permanent rule scope · "+event.ruleScope+" · "+event.workspace;
+    dialog.append(scope);
+    const alwaysDeny=document.createElement("button");
+    alwaysDeny.className="btn";
+    alwaysDeny.textContent="Always deny";
+    alwaysDeny.onclick=()=>answer(reject?.optionId??null,{persistent:"deny"});
+    actions.append(alwaysDeny);
+  }
   for(const choice of event.options||[]){
     if(choice.kind!=="allow_once")continue;
-    const button=document.createElement("button");button.className="btn btn-primary";button.textContent="Approve once";
+    const button=document.createElement("button");button.className="btn btn-primary";button.textContent="Allow once";
     button.onclick=()=>answer(choice.optionId);actions.append(button);
+    if(event.canAlwaysAllow){
+      const alwaysAllow=document.createElement("button");
+      alwaysAllow.className="btn";
+      alwaysAllow.textContent="Always allow";
+      alwaysAllow.onclick=()=>answer(choice.optionId,{persistent:"allow"});
+      actions.append(alwaysAllow);
+    }
     if(event.canRemember){
       const sessionButton=document.createElement("button");sessionButton.className="btn";sessionButton.textContent="Allow this file for the session";
-      sessionButton.onclick=()=>answer(choice.optionId,true);actions.append(sessionButton);
+      sessionButton.onclick=()=>answer(choice.optionId,{remember:true});actions.append(sessionButton);
     }
   }
   dialog.addEventListener("cancel",e=>{e.preventDefault();deny.click()});
@@ -523,7 +588,7 @@ function renderAgents(){
   const result=value=>value===true?"Verified":value===false?"Failed":"Not checked";
   const model=state.session?.mode==="agent"?state.session.model:h.model;
   const connection=card("Backend connections","Connection diagnostics",statusRows([
-    ["Goose ACP",h.gooseInitialized?"Session initialized":h.goose?"CLI installed":"Missing"],
+    ["Goose ACP",h.gooseInitialized?"Session initialized":gooseRuntimeLabel(h.gooseRuntime)],
     ["Ollama",h.ollama?"Connected":"Offline"],["Current model",model||"Unavailable"]]));
   const capabilities=card("Local capabilities","Workspace preflight",statusRows([
     ["File read and write",result(p.filesystem)],["PowerShell",result(p.terminal)],
@@ -538,7 +603,7 @@ function renderAgents(){
   $("#agents-folder").onclick=()=>changeView("settings");
   $("#run-agent-checks").onclick=async event=>{
     event.currentTarget.disabled=true;
-    try{await api("/api/preflight");await loadHealth();if(state.view==="agents")renderAgents()}
+    try{const diagnostics=await api("/api/diagnostics?probe=1");await loadHealth();if(state.view==="agents")renderAgents();if(!diagnostics.acp?.ok)toast(diagnostics.acp?.error||"Goose ACP check failed","error")}
     catch(e){toast(e.message,"error");if(state.view==="agents")renderAgents()}
   };
 }
@@ -572,7 +637,7 @@ function renderProjects(){
   });
 }
 function renderModels(){
-  const d=state.modelData,installed=d?.models||[],visible=d?.visible||[];
+  const d=state.modelData,installed=d?.models||[];
   $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("OLLAMA","Models","Choose which installed Ollama models appear in the picker.",'<button class="btn" id="models-refresh">Refresh models</button>')+
     '<div class="row-between" style="margin-bottom:14px"><input class="field" id="models-search" style="max-width:380px" placeholder="Search installed models…" aria-label="Search installed models"></div>'+
     '<div class="table-wrap">'+(installed.length?'<table class="table"><thead><tr><th>Model</th><th>Disk size</th><th>Family</th><th>Visible</th><th>Default</th></tr></thead><tbody id="models-body"></tbody></table>':'<div class="empty-panel"><h3>No Ollama models loaded</h3>Start Ollama and refresh the model list.</div>')+'</div>'+
@@ -582,12 +647,24 @@ function renderModels(){
     if(!body)return;
     const term=$("#models-search").value.toLowerCase();
     body.innerHTML=installed.filter(m=>m.name.toLowerCase().includes(term)).map(m=>
-      '<tr><td><strong>'+esc(m.name)+'</strong>'+'</td><td>'+((m.size||0)/1073741824).toFixed(1)+' GB</td><td>'+esc(m.family||"Unknown")+'</td><td><input type="checkbox" class="switch model-visible" data-model="'+esc(m.name)+'" aria-label="Show '+esc(m.name)+'" '+(visible.includes(m.name)?"checked":"")+'></td><td><button class="btn btn-small '+(m.name===d.selected?"btn-primary":"")+'" data-choose="'+esc(m.name)+'" '+(m.name===d.selected?"disabled":"")+'>'+(m.name===d.selected?"Selected":"Set default")+'</button></td></tr>').join("");
+      '<tr><td><strong>'+esc(m.name)+'</strong>'+'</td><td>'+((m.size||0)/1073741824).toFixed(1)+' GB</td><td>'+esc(m.family||"Unknown")+'</td><td><input type="checkbox" class="switch model-visible" data-model="'+esc(m.name)+'" aria-label="Show '+esc(m.name)+'" '+((d.visible||[]).includes(m.name)?"checked":"")+(pendingVisibility.has(m.name)?" disabled":"")+'></td><td><button class="btn btn-small '+(m.name===d.selected?"btn-primary":"")+'" data-choose="'+esc(m.name)+'" '+(m.name===d.selected?"disabled":"")+'>'+(m.name===d.selected?"Selected":"Set default")+'</button></td></tr>').join("");
     $$(".model-visible").forEach(sw=>sw.onchange=async()=>{
-      const before=d.visible.slice();
-      d.visible=sw.checked?[...new Set([...d.visible,sw.dataset.model])]:d.visible.filter(n=>n!==sw.dataset.model);
-      try{await post("/api/models/settings",{visible:d.visible});renderModels();toast("Visibility saved","good")}
-      catch(e){d.visible=before;renderModels();toast(e.message,"error")}
+      const model=sw.dataset.model;
+      if(pendingVisibility.has(model))return;
+      const before=d.visible.includes(model),visible=sw.checked;
+      const set=value=>{
+        const values=new Set(d.visible);
+        if(value)values.add(model);else values.delete(model);
+        d.visible=[...values];
+      };
+      set(visible);pendingVisibility.add(model);sw.disabled=true;
+      try{await post("/api/models/settings",{visibility:{model,visible}})}
+      catch(error){set(before);toast("Could not save visibility: "+error.message,"error")}
+      finally{
+        pendingVisibility.delete(model);
+        const current=[...body.querySelectorAll(".model-visible")].find(item=>item.dataset.model===model);
+        if(current){current.checked=d.visible.includes(model);current.disabled=false}
+      }
     });
     $$("[data-choose]").forEach(b=>b.onclick=()=>selectModel(b.dataset.choose));
   };
@@ -606,14 +683,17 @@ function renderModels(){
     const control=$("#"+id);
     control.disabled=!d;
     control.onchange=async()=>{
-      try{await post("/api/models/settings",{[key]:control.checked});d[key]=control.checked;toast("Settings saved")}
+      const value=control.checked;
+      control.disabled=true;
+      try{await post("/api/models/settings",{[key]:value});d[key]=value;toast("Settings saved")}
       catch(error){control.checked=!!d?.[key];toast(error.message,"error")}
+      finally{control.disabled=false}
     };
   }
 }
 function renderSettings(){
   const directory=state.health?.preflight?.workspace||"";
-  $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("DESKTOP APP","Settings","Manage appearance, the default workspace and local runtime.")+
+  $("#content").innerHTML='<div class="content-scroll"><div class="page-width settings-page">'+heading("","Settings","Manage your local runtime, workspace, and preferences.")+
     '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Appearance</h2><p>Choose a theme and motion preference</p></div></div><div class="card-content"><div class="tile-grid">'+THEMES.map(t=>
       '<button class="theme-tile '+(document.body.dataset.theme===t[0]?"selected":"")+'" data-theme="'+t[0]+'" aria-pressed="'+(document.body.dataset.theme===t[0])+'"><span class="theme-swatch" style="background:'+t[3]+'"><i style="background:'+t[4]+'"></i><i style="background:'+t[5]+'"><b style="background:'+t[6]+'"></b></i></span><strong>'+t[1]+'</strong><small>'+t[2]+'</small></button>').join("")+'</div><div class="divider"></div><div class="setting-row"><div><strong>Interface animations</strong></div><input class="switch" type="checkbox" id="motion-checkbox" aria-label="Interface animations" '+(document.body.dataset.motion==="on"?"checked":"")+'></div></div></section>'+
     '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Default project directory</h2><p>Used for newly created chats</p></div></div><div class="card-content"><label class="field-label" for="workspace-path">Windows folder</label><div class="field-row"><input class="field" id="workspace-path" value="'+esc(directory)+'"><button class="btn btn-primary" id="workspace-change">Use folder</button></div><p class="inline-help">Changing this does not move existing chats. Each chat stores its own workspace.</p></div></section>'+
@@ -625,11 +705,20 @@ function renderSettings(){
     catch(e){toast(e.message,"error")}
   };
   $("#workspace-path").onkeydown=e=>{if(e.key==="Enter")$("#workspace-change").click()};
-  $("#settings-check").onclick=async()=>{try{state.health.preflight=await api("/api/preflight");renderSettings();toast("Diagnostics finished","good")}catch(e){toast(e.message,"error")}};
+  $("#settings-check").onclick=async event=>{
+    event.currentTarget.disabled=true;
+    try{
+      const diagnostics=await api("/api/diagnostics?probe=1");
+      await loadHealth();
+      if(state.view==="settings")renderSettings();
+      toast(diagnostics.acp?.ok?"Goose ACP initialized":diagnostics.acp?.error||"Goose ACP check failed",diagnostics.acp?.ok?"good":"error");
+    }catch(e){toast(e.message,"error")}
+    finally{if(event.target.isConnected)event.target.disabled=false}
+  };
   void mountSettings($("#content .page-width"),async()=>{
     await Promise.all([loadHealth(),loadModels(),loadProjects(),loadSessions()]);
     render();
-  },loadModels);
+  },loadModels,loadHealth);
 }
 function bindEvents(){
   $("#navigation").onclick=e=>{const view=e.target.closest("[data-view]")?.dataset.view;if(view)changeView(view)};
@@ -682,6 +771,9 @@ async function importLegacy(){
 }
 async function start(){
   applyTheme();bindEvents();
+  void mountPermissions(null,api,post,toast);
+  window.addEventListener("wisk-measurements-changed",event=>{if(!event.detail){state.performance=null;updatePerformance()}});
+  window.addEventListener("wisk-security-changed",()=>void mountPermissions(null,api,post,toast));
   try{
     await importLegacy();
     await Promise.all([loadHealth(),loadModels(),loadProjects(),loadSessions()]);
@@ -692,7 +784,7 @@ async function start(){
     try{const data=await api("/api/agent/pending");for(const p of data.pending||[])showPermission(p)}catch{}
     const setup=await api("/api/setup");
     if(!setup.configured&&!document.querySelector("dialog[open]")){
-      void showSetup(async()=>{await Promise.all([loadHealth(),loadModels(),loadProjects()]);render();}).catch(error=>toast(error.message,"error"));
+      void showSetup(async()=>{await Promise.all([loadHealth(),loadModels(),loadProjects()]);render();},loadHealth).catch(error=>toast(error.message,"error"));
     }else void notifyUpdate(()=>changeView("settings"));
   }catch(e){
     $("#content").innerHTML='<div class="empty-panel" style="padding:110px 20px"><h3>Backend unavailable</h3><p>'+esc(e.message)+'</p><button class="btn btn-primary" id="retry">Retry</button></div>';

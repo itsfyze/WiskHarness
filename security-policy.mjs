@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import {createHash} from "node:crypto";
 
 export const securityDefaults = Object.freeze({
   workspaceOnly: true,
@@ -19,6 +20,9 @@ export function redactSecrets(value) {
     .replace(/((?:\b\w*(?:api[_-]?key|access[_-]?token|secret[_-]?key|password|client[_-]?secret)\b)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}]+)/gi, "$1[redacted]");
 }
 
+function toolLabel(title) {
+  return typeof title==="string"?title.split(/\s+·\s+/,1)[0].trim().toLowerCase().replace(/^developer__/,""):"";
+}
 function resolveExistingParent(candidate) {
   try {
     const stat = fs.lstatSync(candidate);
@@ -39,13 +43,13 @@ export function assessTool({ call, locations = [], workspace, policy }) {
   const declared = [...new Set(rawPaths.filter(value => typeof value === "string" && value.trim()))];
   const kind = call?.kind;
   const operation = typeof input?.command === "string" ? input.command : "";
-  const label = typeof call?.title === "string" ? call.title.split(/\s+·\s+/,1)[0].trim().toLowerCase() : "";
+  const label = toolLabel(call?.title);
   const fileActions = ["view", "read", "write", "create", "replace", "str_replace", "insert"];
   const category = kind === "execute" || label === "shell" || (operation && !fileActions.includes(operation)) ? "execute"
     : kind === "delete" || label === "delete" ? "delete"
     : ["edit", "move"].includes(kind) || ["write", "edit", "move"].includes(label) ||
       ["write", "create", "replace", "str_replace", "insert"].includes(operation) ? "write"
-    : ["view", "read"].includes(operation) || kind === "read" || label === "read" ? "read"
+    : ["view", "read"].includes(operation) || kind === "read" || ["read","analyze","tree","read_image"].includes(label) ? "read"
     : "other";
   const outside = [];
   const sensitive = [];
@@ -53,7 +57,10 @@ export function assessTool({ call, locations = [], workspace, policy }) {
   let unknownPath = false;
   for (const name of declared) {
     try {
-      if (name.includes("\0") || (process.platform === "win32" && /(^[\\/]{2}|:)/.test(name.replace(/^[a-z]:[\\/]/i, "")))) {
+      const windowsName=name.replace(/^[a-z]:[\\/]/i,"");
+      if (name.includes("\0") || (process.platform === "win32" &&
+        (/(^[\\/]{2}|:)/.test(windowsName)||windowsName.split(/[\\/]/).some(part=>
+          part!=="."&&part!==".."&&(/[. ]$/.test(part)||/^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/i.test(part)))))) {
         throw new Error("Unsupported Windows path");
       }
       const root = fs.realpathSync(workspace);
@@ -61,7 +68,7 @@ export function assessTool({ call, locations = [], workspace, policy }) {
       const relative = path.relative(root, candidate);
       if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) outside.push(name);
       if (sensitivePath(name) || sensitivePath(candidate)) sensitive.push(name);
-      resolved.push(candidate);
+      if(!resolved.includes(candidate))resolved.push(candidate);
     } catch {
       unknownPath = true;
     }
@@ -71,7 +78,7 @@ export function assessTool({ call, locations = [], workspace, policy }) {
     (policy.secretProtection && sensitive.length > 0);
   const readScope = category === "read" && resolved.length === 1 && !outside.length && !sensitive.length && !unknownPath
     ? resolved[0] : null;
-  return { category, outside, sensitive, denied, preference, readScope };
+  return { category, outside, sensitive, resolved, unknownPath, denied, preference, readScope };
 }
 
 export function securitySettings(input, current) {
@@ -89,4 +96,70 @@ export function securitySettings(input, current) {
     validated[category] = toolPolicies[category];
   }
   return { workspaceOnly, secretProtection, toolPolicies: validated };
+}
+
+
+export const permissionModes = ["ask", "auto", "full"];
+
+export function permissionScope(call, decision, workspace) {
+  const input = call.rawInput;
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const operation = typeof input.command === "string" ? input.command : "";
+  const keys = Object.keys(input).sort();
+  const onePath = typeof input.path === "string" && decision.resolved.length === 1 &&
+    !decision.outside.length && !decision.sensitive.length && !decision.unknownPath;
+  const signatures = {
+    view: ["command", "path", "view_range"],
+    analyze: ["path"],
+    edit: ["after", "before", "path"],
+    write: ["content", "path"],
+    create: ["command", "file_text", "path"],
+    str_replace: ["command", "new_str", "old_str", "path"],
+    insert: ["command", "insert_line", "new_str", "path"]
+  };
+  const title = toolLabel(call.title);
+  const fileTool = ["text_editor", "developer__text_editor", "view", "read", "write", "create", "replace", "str_replace", "insert", "edit", "analyze"].includes(title);
+  const action = operation || title;
+  const read = action === "view" || action === "analyze";
+  const fields = Object.hasOwn(signatures, action) ? signatures[action] : null;
+  const validRange = input.view_range === undefined ||
+    Array.isArray(input.view_range) && input.view_range.length === 2 && input.view_range.every(Number.isInteger);
+  const valid = read ? validRange : action === "write" ? typeof input.content === "string" :
+    action === "edit" ? typeof input.before === "string" && typeof input.after === "string" :
+    action === "create" ? typeof input.file_text === "string" :
+    action === "str_replace" ? typeof input.old_str === "string" && typeof input.new_str === "string" :
+    action === "insert" && Number.isInteger(input.insert_line) && typeof input.new_str === "string";
+  const structured = fileTool && onePath && !!fields && valid && keys.every(key => fields.includes(key)) &&
+    (read ? decision.category === "read" && fs.existsSync(decision.resolved[0]) &&
+      fs.statSync(decision.resolved[0], {throwIfNoEntry:false})?.isFile() : decision.category === "write");
+  const shell = decision.category === "execute" && title==="shell" &&
+    keys.join(",") === "command" && operation.trim() !== "";
+  if (!structured && !shell) return null;
+  const root = fs.realpathSync(workspace);
+  const identity = structured
+    ? ["file", action, decision.resolved[0], keys.filter(key=>key!=="path").map(key=>[key,input[key]])]
+    : ["shell", operation];
+  return {
+    workspace: root,
+    fingerprint: createHash("sha256").update(JSON.stringify([root,...identity])).digest("hex"),
+    label: structured ? action + " " + decision.resolved[0] + " (exact inputs)" : "Exact shell command (command text omitted from saved rules)",
+    safeRead: structured && read,
+    structured,
+    shell
+  };
+}
+
+export function permissionDecision(decision, scope, policy) {
+  if (decision.denied) return "deny";
+  const rules = Array.isArray(policy.permissionRules) ? policy.permissionRules : [];
+  const matches = rule => scope && rule?.workspace === scope.workspace && rule.fingerprint === scope.fingerprint;
+  if (rules.some(rule => matches(rule) && rule.effect === "deny")) return "deny";
+  if (scope?.structured && rules.some(rule => matches(rule) && rule.effect === "allow")) return "allow";
+  if (scope?.safeRead && (policy.permissionMode === "auto" || decision.preference === "allow")) return "allow";
+  // Full access is the user's explicit opt-in to automatic Goose tool approval.
+  // This includes shell commands and tools whose inputs cannot be structurally
+  // classified. Hard path/secret restrictions and explicit deny rules above
+  // still take precedence when the request declares inspectable paths.
+  if (policy.permissionMode === "full") return "allow";
+  return "ask";
 }

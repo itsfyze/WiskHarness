@@ -6,17 +6,19 @@ import {randomUUID,createHash,timingSafeEqual} from "node:crypto";
 import {spawn,spawnSync} from "node:child_process";
 import {streamPlan} from "./plan-chat.mjs";
 import {Readable,Writable} from "node:stream";
+import {setTimeout as delay} from "node:timers/promises";
 import {fileURLToPath} from "node:url";
 import * as acp from "@agentclientprotocol/sdk";
 import {createUpdater} from "./updates.mjs";
 import {startTerminal,stopTree} from "./terminal.mjs";
 import {snapshotWorkspace,compareWorkspace,revertChange} from "./workspace-review.mjs";
 import {SessionStore} from "./session-store.mjs";
-import {checkpointObsidian,shouldCheckpoint,readProjectContext,defaultVault} from "./obsidian-checkpoint.mjs";
-import {assessTool,redactSecrets,securityDefaults,securitySettings} from "./security-policy.mjs";
+import {checkpointObsidian,shouldCheckpoint,readProjectContext} from "./obsidian-checkpoint.mjs";
+import {assessTool,permissionScope,permissionDecision,permissionModes,redactSecrets,securityDefaults,securitySettings} from "./security-policy.mjs";
 import {credentialStore,parseModelRef,providerClient,providerConfig} from "./providers.mjs";
 import {workspaceGit} from "./git-workspace.mjs";
 import {exportProfile,validateProfile} from "./profile-backup.mjs";
+import {createGooseRuntime, GOOSE_RELEASE} from "./goose-runtime.mjs";
 
 const ROOT=path.dirname(fileURLToPath(import.meta.url));
 const HOST="127.0.0.1";
@@ -29,7 +31,6 @@ function installedCommand(name) {
   const result=spawnSync("where.exe",[name],{windowsHide:true,encoding:"utf8",timeout:2000});
   return (result.stdout||"").split(/\r?\n/).find(candidate=>path.isAbsolute(candidate)&&fs.existsSync(candidate)) || null;
 }
-const GOOSE=process.env.LOCAL_AGENT_GOOSE_PATH||installedCommand("goose.exe")||path.join(os.homedir(),".local","bin","goose.exe");
 const POWERSHELL=installedCommand("pwsh.exe")?"pwsh.exe":"powershell.exe";
 const OLLAMA_INSTALLED=!!installedCommand("ollama.exe");
 const GIT=installedCommand("git.exe");
@@ -40,18 +41,23 @@ const CONFIG_DIR=path.resolve(process.env.LOCAL_AGENT_SETTINGS_DIR||ROOT);
 fs.mkdirSync(CONFIG_DIR,{recursive:true});
 const SETTINGS=path.join(CONFIG_DIR,"settings.json");
 const GOOSE_ROOT=path.join(CONFIG_DIR,"local-data","goose");
-const DEFAULTS={model:null,setupComplete:false,updateAutomatic:true,updateChannel:"stable",lastUpdateCheck:null,...securityDefaults,usageMeasurements:true,contextTokens:null,vault:null,visible:null,knownModels:null,workspace:process.env.LOCAL_AGENT_WORKSPACE||ROOT,unloadPrevious:true,autoDiscover:true,projects:[],legacyImportHashes:[]};
+const gooseSources=["auto","system","portable","custom"];
+const gooseStatus=()=>gooseRuntime.status(settings.gooseRuntime);
+const DEFAULTS={permissionMode:"ask",permissionRules:[],model:null,setupComplete:false,updateAutomatic:true,updateChannel:"stable",lastUpdateCheck:null,...securityDefaults,usageMeasurements:true,contextTokens:null,vault:null,visible:null,knownModels:null,workspace:process.env.LOCAL_AGENT_WORKSPACE||ROOT,unloadPrevious:true,autoDiscover:true,projects:[],legacyImportHashes:[]};
 let settings={...DEFAULTS};
 let settingsError=null;
 try{settings={...DEFAULTS,...JSON.parse(fs.readFileSync(SETTINGS,"utf8"))}}
 catch(error){if(error.code!=="ENOENT")settingsError="Existing settings could not be read. Restore a valid settings file before saving changes."}
-const vault=()=>process.env.LOCAL_AGENT_OBSIDIAN_VAULT||(settings.vault??(fs.existsSync(defaultVault)?defaultVault:null));
+if (!permissionModes.includes(settings.permissionMode)||settings.permissionMode==="full"&&!nonce.length) settings.permissionMode="ask";
+settings.permissionRules=Array.isArray(settings.permissionRules)?settings.permissionRules:[];
+const vault=()=>process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT==="1"?null:process.env.LOCAL_AGENT_OBSIDIAN_VAULT||settings.vault||null;
 const updater=createUpdater({version:VERSION,directory:path.join(CONFIG_DIR,"updates"),kind:process.env.WISKHARNESS_PACKAGE_KIND});
 settings.workspace=path.resolve(settings.workspace||DEFAULTS.workspace);
 settings.projects=Array.isArray(settings.projects)?settings.projects:[];
 settings.providers=settings.providers&&typeof settings.providers==="object"?settings.providers:{};
 settings.modeDefaults=settings.modeDefaults&&typeof settings.modeDefaults==="object"?settings.modeDefaults:{};
 settings.compatibility=Array.isArray(settings.compatibility)?settings.compatibility:[];
+if(!gooseSources.includes(settings.gooseRuntime?.source))delete settings.gooseRuntime;
 const saveSettings=()=>{if(settingsError)throw new Error(settingsError);const tmp=SETTINGS+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(settings,null,2),"utf8");fs.renameSync(tmp,SETTINGS)};
 const credentials=credentialStore(path.join(CONFIG_DIR,"local-data","provider-credentials"));
 const providerAPI=providerClient({credentials,config:()=>settings.providers});
@@ -82,6 +88,16 @@ app.use((error,_req,res,next)=>{
   if(error.type==="entity.too.large")return res.status(413).json({error:"Request exceeds the permitted size"});
   next(error);
 });
+const markdownAssets={
+  "marked.js":"marked/lib/marked.esm.js",
+  "purify.js":"dompurify/dist/purify.es.mjs",
+  "highlight.js":"@highlightjs/cdn-assets/es/highlight.min.js"
+};
+app.get("/markdown-dependencies/:asset",(req,res)=>{
+  const asset=req.params.asset;
+  if(!Object.hasOwn(markdownAssets,asset))return res.sendStatus(404);
+  res.type("application/javascript").sendFile(path.join(ROOT,"node_modules",markdownAssets[asset]));
+});
 app.use(express.static(path.join(ROOT,"public"),{extensions:["html"],setHeaders:res=>res.setHeader("Cache-Control","no-cache")}));
 const protect=value=>settings.secretProtection ? redactSecrets(value) : value;
 const safe=e=>protect(e instanceof Error?e.message:String(e));
@@ -93,9 +109,43 @@ const pending=new Map();
 const sessionReads=new Map();
 let cachedPreflight=null,preflightTime=0,cachedModels=null,modelsTime=0;
 let busy=false,terminal=null,metrics=null,unloadPending=null,gitMutating=false;
+let cpuSample=null;
+function sampleCpu(){
+  const times=os.cpus().reduce((result,{times})=>({
+    idle:result.idle+times.idle,total:result.total+Object.values(times).reduce((a,b)=>a+b,0)
+  }),{idle:0,total:0});
+  const previous=cpuSample;cpuSample=times;
+  const total=times.total-(previous?.total??times.total);
+  return total>0?Math.max(0,Math.min(100,100*(1-(times.idle-previous.idle)/total))):null;
+}
+function recordUsage(stats){
+  if(!settings.usageMeasurements||!activeRun)return;
+  Object.assign(activeRun.measurements,stats);
+  const {prompt_eval_count,eval_count}=activeRun.measurements;
+  if(Number.isFinite(prompt_eval_count)&&Number.isFinite(eval_count))activeRun.measurements.totalTokens=prompt_eval_count+eval_count;
+}
+function publishMetrics(status){
+  if(!settings.usageMeasurements||!activeRun)return;
+  metrics={...activeRun.measurements,status,elapsedMs:performance.now()-activeRun.startedAt};
+  emit("metrics",{metrics});
+}
+function measureText(text){
+  if(!text||!settings.usageMeasurements||!activeRun||activeRun.measurements.firstTextMs!==undefined)return;
+  recordUsage({firstTextMs:performance.now()-activeRun.startedAt});
+  publishMetrics("running");
+  const run=activeRun;
+  if(run.measurements.source==="ollama")void ollamaApi("/api/ps",null,850).then(({models})=>{
+    if(activeRun!==run||run.finished||!settings.usageMeasurements)return;
+    const loaded=models?.find(({name,model})=>[name,model].some(value=>value===run.record.model||value===run.record.model+":latest"));
+    if(Number.isInteger(loaded?.context_length)&&loaded.context_length>0){
+      recordUsage({ollamaContext:loaded.context_length});
+      publishMetrics("running");
+    }
+  }).catch(()=>{});
+}
 function preflight(force=false,workspace=settings.workspace){
   if(!force&&cachedPreflight&&Date.now()-preflightTime<20000&&workspace===settings.workspace)return cachedPreflight;
-  const result={filesystem:false,terminal:false,cmd:false,goose:fs.existsSync(GOOSE),workspace,errors:[]};
+  const result={filesystem:false,terminal:false,cmd:false,goose:gooseStatus().detected,workspace,errors:[]};
   try{
     const folder=fs.mkdtempSync(path.join(workspace,".agent-check-"));
     const file=path.join(folder,"verify.txt");
@@ -113,10 +163,10 @@ function preflight(force=false,workspace=settings.workspace){
   if(workspace===settings.workspace){cachedPreflight=result;preflightTime=Date.now()}
   return result;
 }
-async function ollamaApi(endpoint,body=null){
+async function ollamaApi(endpoint,body=null,timeout=12000){
   const response=await fetch(OLLAMA+endpoint,{method:body?"POST":"GET",
     headers:body?{"content-type":"application/json"}:{},body:body?JSON.stringify(body):undefined,
-    signal:AbortSignal.timeout(12000)});
+    signal:AbortSignal.timeout(timeout)});
   if(!response.ok)throw new Error("Ollama returned "+response.status);
   return response.json();
 }
@@ -192,19 +242,24 @@ function toolDetail(value,limit=12000){
 }
 const agentEnvironment=()=>Object.fromEntries(Object.entries(process.env).filter(([name])=>
   !/(?:KEY|TOKEN|PASS(?:WORD)?|SECRET|CREDENTIAL|AUTH|^GOOSE_|^WISKHARNESS_API_TOKEN$)/i.test(name)));
+const gooseEnvironment=()=>({...agentEnvironment(),GOOSE_PATH_ROOT:GOOSE_ROOT});
+const gooseRuntime=createGooseRuntime({directory:CONFIG_DIR,environment:gooseEnvironment});
 async function openAgent(record,signal){
   if(active&&active.recordId===record.id&&active.model===record.model&&active.workspace===record.workspace)return{native:true};
   signal.throwIfAborted();
   closeAgent();procError="";
-  if(!fs.existsSync(GOOSE))throw new Error("Goose CLI is not installed");
   if(!isFolder(record.workspace))throw new Error("Session folder no longer exists: "+record.workspace);
+  const runtime=await gooseRuntime.verify(settings.gooseRuntime,signal);
+  signal.throwIfAborted();
   const gooseConfig=path.join(GOOSE_ROOT,"config");
   fs.mkdirSync(gooseConfig,{recursive:true});
-  const permissions={user:{always_allow:[],ask_before:["developer__shell","developer__text_editor","developer__write","developer__edit"],never_allow:[]}};
+  const developerTools=["shell","text_editor","write","edit","tree","read_image"];
+  const permissions={user:{always_allow:[],ask_before:[...developerTools,...developerTools.map(name=>"developer__"+name),"analyze","analyze__analyze"],
+    never_allow:["delegate","summon__delegate","extensionmanager__manage_extensions","apps__create_app","apps__delete_app","apps__iterate_app"]}};
   fs.writeFileSync(path.join(gooseConfig,"permission.yaml"),JSON.stringify(permissions),"utf8");
-  const proc=spawn(GOOSE,["acp","--with-builtin","developer"],{
+  const proc=spawn(runtime.file,["acp","--with-builtin","developer"],{
     cwd:record.workspace,
-    env:{...agentEnvironment(),GOOSE_PROVIDER:"ollama",GOOSE_MODEL:record.model,OLLAMA_HOST:OLLAMA,GOOSE_SHELL:path.basename(POWERSHELL,".exe"),GOOSE_MODE:"approve",GOOSE_PATH_ROOT:GOOSE_ROOT,
+    env:{...gooseEnvironment(),GOOSE_PROVIDER:"ollama",GOOSE_MODEL:record.model,OLLAMA_HOST:OLLAMA,GOOSE_SHELL:path.basename(POWERSHELL,".exe"),GOOSE_MODE:"approve",
       GOOSE_INPUT_LIMIT:"16384",GOOSE_CONTEXT_LIMIT:String(settings.contextTokens||32768)},
     stdio:["pipe","pipe","pipe"],windowsHide:true
   });
@@ -219,7 +274,11 @@ async function openAgent(record,signal){
       if(u.sessionUpdate==="agent_message_chunk"&&u.content?.type==="text"){
         const text=String(u.content.text);
         activeRun.reply.text+=text;
+        measureText(text);
         emit("text",{text});queueFlush();
+      }else if(u.sessionUpdate==="usage_update"&&Number.isInteger(u.used)&&u.used>=0&&Number.isInteger(u.size)&&u.size>0){
+        recordUsage({contextUsed:u.used,contextSize:u.size});
+        publishMetrics("running");
       }else if(u.sessionUpdate==="agent_thought_chunk"){
         if(!settings.secretProtection)emit("thinking",{text:String(u.content?.text||"").slice(0,1400)});
       }else if(u.sessionUpdate==="plan"&&Array.isArray(u.entries)){
@@ -250,7 +309,7 @@ async function openAgent(record,signal){
       }else if(u.sessionUpdate)emit("status",{update:String(u.sessionUpdate)});
     })
     .onRequest(acp.methods.client.session.requestPermission,({params})=>{
-      if(!activeRun||activeRun.record.id!==record.id)return{outcome:{outcome:"cancelled"}};
+      if(loading||!activeRun||activeRun.record.mode!=="agent"||activeRun.record.id!==record.id||params.sessionId!==active?.gooseSessionId)return{outcome:{outcome:"cancelled"}};
       if(activeRun.controller.signal.aborted)return{outcome:{outcome:"cancelled"}};
       const id=randomUUID();
       const options=(params.options||[]).filter(o=>["allow_once","reject_once"].includes(o.kind));
@@ -258,21 +317,34 @@ async function openAgent(record,signal){
       const raw=params.toolCall?.rawInput??activeRun.toolRequests.get(params.toolCall?.toolCallId);
       const full=typeof raw==="string"?raw:JSON.stringify(raw);
       if(full?.length>32000)return{outcome:{outcome:"cancelled"}};
-      const decision=assessTool({call:{kind:known?.kind,title:known?.title,...params.toolCall,rawInput:raw},locations:known?.locations,
-        workspace:record.workspace,policy:settings});
+      const call={kind:known?.kind,title:known?.title,...params.toolCall,rawInput:raw};
+      const evaluate=()=>{
+        const decision=assessTool({call,locations:known?.locations,workspace:record.workspace,policy:settings});
+        const reserved=[SETTINGS,path.join(CONFIG_DIR,"local-data"),vault()].filter(Boolean);
+        const touchesReserved=decision.resolved.some(candidate=>reserved.some(target=>{
+          const rel=path.relative(path.resolve(target),candidate);
+          return rel===""||rel!==".."&&!rel.startsWith(".."+path.sep)&&!path.isAbsolute(rel);
+        }));
+        if(touchesReserved||decision.unknownPath)decision.denied=true;
+        let scope=null;
+        try{scope=permissionScope(call,decision,record.workspace)}catch{}
+        return {decision,scope,outcome:permissionDecision(decision,scope,settings)};
+      };
+      const {decision,scope,outcome}=evaluate();
       const reject=options.find(option=>option.kind==="reject_once");
-      if(decision.denied){
+      const allow=options.find(option=>option.kind==="allow_once");
+      const key=scope?.safeRead?JSON.stringify([record.id,scope.fingerprint]):null;
+      if(outcome==="deny"){
         emit("status",{update:"Blocked an agent tool request under the current security policy"});
         return {outcome:reject?{outcome:"selected",optionId:reject.optionId}:{outcome:"cancelled"}};
       }
-      const allow=options.find(option=>option.kind==="allow_once");
-      const key=decision.readScope && JSON.stringify([record.id,decision.readScope]);
-      if(allow&&key&&(decision.preference==="allow"||sessionReads.has(key))){
-        return {outcome:{outcome:"selected",optionId:allow.optionId}};
+      if(outcome==="allow"||key&&sessionReads.has(key)){
+        return {outcome:allow?{outcome:"selected",optionId:allow.optionId}:{outcome:"cancelled"}};
       }
+      if(!allow||!raw)return {outcome:{outcome:"cancelled"}};
       const request={id,sessionId:record.id,title:protect(params.toolCall?.title||known?.title||"Agent tool permission"),
         details:toolDetail(raw,32000)||known?.input||"",workspace:record.workspace,outside:decision.outside,
-        category:decision.category,policy:decision.preference,key,options,expiresAt:Date.now()+120000};
+        category:decision.category,policy:decision.preference,key,scope,evaluate,options,expiresAt:Date.now()+120000};
       return new Promise(resolve=>{
         const timer=setTimeout(()=>resolvePermission(request,null),120000);
         request.finish=outcome=>{clearTimeout(timer);resolve(outcome)};
@@ -316,10 +388,35 @@ function compact(record){
     status:record.status,messageCount:record.messages.length};
 }
 const permissionView=p=>({requestId:p.id,sessionId:p.sessionId,title:p.title,details:p.details,workspace:p.workspace,
-  outside:p.outside,category:p.category,policy:p.policy,canRemember:Boolean(p.key),options:p.options,expiresAt:p.expiresAt});
+  outside:p.outside,category:p.category,policy:p.policy,canRemember:Boolean(p.key),ruleScope:p.scope?protect(p.scope.label):null,canAlwaysAllow:!!p.scope?.structured,options:p.options,expiresAt:p.expiresAt});
 const publicSecurity=()=>({workspaceOnly:settings.workspaceOnly,secretProtection:settings.secretProtection,
-  toolPolicies:settings.toolPolicies,agentSandbox:false,networkIsolation:false});
+  toolPolicies:settings.toolPolicies,permissionMode:settings.permissionMode,permissionRules:settings.permissionRules.map(({id,effect,label,workspace,structured})=>({id,effect,label,workspace:protect(workspace),canAllow:structured===true})),agentSandbox:false,networkIsolation:false});
 app.get("/api/security",(_req,res)=>res.json(publicSecurity()));
+app.post("/api/security/mode",(req,res)=>{
+  const {mode,confirmed}=req.body||{};
+  if(!permissionModes.includes(mode)||mode==="full"&&(confirmed!==true||!nonce.length))
+    return fail(res,new Error("Full access requires confirmation in the authenticated desktop app"),400);
+  const previous=settings.permissionMode;
+  settings.permissionMode=mode;
+  try{saveSettings()}
+  catch(error){settings.permissionMode=previous;return fail(res,error)}
+  if(previous!==mode){
+    sessionReads.clear();
+    for(const request of pending.values())resolvePermission(request,null);
+  }
+  res.json(publicSecurity());
+});
+app.patch("/api/security/rules/:id",(req,res)=>{
+  const {effect}=req.body||{};
+  const rule=settings.permissionRules.find(item=>item.id===req.params.id);
+  if(!rule)return fail(res,new Error("Permission rule not found"),404);
+  if(!["allow","deny","revoke"].includes(effect)||effect==="allow"&&!rule.structured)
+    return fail(res,new Error("This rule cannot grant that permission"),400);
+  const previous=settings.permissionRules;
+  settings.permissionRules=effect==="revoke"?previous.filter(item=>item!==rule):previous.map(item=>item===rule?{...item,effect}:item);
+  try{saveSettings();res.json(publicSecurity())}
+  catch(error){settings.permissionRules=previous;fail(res,error)}
+});
 app.get("/api/profile-backup",(_req,res)=>{
   if(!nonce.length)return fail(res,new Error("Backups require an authenticated desktop profile"),403);
   if(busy||terminal)return fail(res,new Error("Finish active work before exporting a backup"),409);
@@ -351,9 +448,10 @@ app.post("/api/profile-backup",(req,res)=>{
   }catch(error){fail(res,error,400)}
 });
 app.post("/api/security",(req,res)=>{
-  if(busy||terminal)return fail(res,new Error("Finish active work before changing permissions"),409);
+  if(busy||terminal)return fail(res,new Error("Finish active work before changing base protections"),409);
   try{
     const changes=securitySettings(req.body,settings);
+    if(req.body?.reset)Object.assign(changes,{permissionMode:"ask",permissionRules:[]});
     const previous=settings;
     settings={...settings,...changes};
     try{saveSettings()}catch(error){settings=previous;throw error}
@@ -452,7 +550,8 @@ app.post("/api/model-compatibility",async(req,res)=>{
 app.get("/api/health",async(req,res)=>{
   let ollama=false,modelCount=0;
   try{modelCount=(await models()).length;ollama=true}catch{}
-  res.json({ok:true,apiVersion:4,version:VERSION,goose:fs.existsSync(GOOSE),ollama,modelCount,busy,model:active?.model||settings.model,
+  const goose=gooseStatus();
+  res.json({ok:true,apiVersion:4,version:VERSION,goose:goose.detected&&!goose.error,gooseRuntime:goose,ollama,modelCount,busy,model:active?.model||settings.model,
     activeSessionId:activeRun?.record.id||null,activeMode:activeRun?.record.mode||null,terminalRunning:!!terminal,
     gooseInitialized:!!active,ollamaEndpoint:OLLAMA,preflight:cachedPreflight||{workspace:settings.workspace,errors:[]}});
 });
@@ -465,23 +564,34 @@ app.get("/api/models",async(req,res)=>{
   }catch(e){fail(res,e,503)}
 });
 app.post("/api/models/settings",async(req,res)=>{
-  if(busy||terminal)return fail(res,new Error("Finish active work before changing models"),409);
   try{
-    const installed=await models(true);
-    const names=installed.map(m=>m.name),selected=req.body.model,previous=settings.model;
+    const selected=req.body.model,previous=settings.model;
+    if(selected!==undefined&&(busy||terminal))return fail(res,new Error("Finish active work before changing models"),409);
+    const names=(selected!==undefined?await models():cachedModels||[]).map(m=>m.name);
+    const next={...settings};
     if(selected!==undefined){
       if(typeof selected!=="string"||!names.includes(selected))return fail(res,new Error("Model is not installed"),400);
       if(busy)return fail(res,new Error("Cannot change models during a run"),409);
-      settings.model=selected;
-      if(previous!==selected){closeAgent();if(settings.unloadPrevious)void unload(previous)}
+      next.model=selected;
     }
-    if(Array.isArray(req.body.visible)){
-      settings.visible=[...new Set(req.body.visible.filter(n=>typeof n==="string"&&names.includes(n)))];
-      settings.knownModels=names;
+    const visibility=req.body.visibility;
+    if(visibility!==undefined){
+      if(typeof visibility?.visible!=="boolean"||!names.includes(visibility.model))
+        return fail(res,new Error("Refresh the model list before changing visibility"),400);
+      const visible=new Set(Array.isArray(settings.visible)?settings.visible:names);
+      if(visibility.visible)visible.add(visibility.model);else visible.delete(visibility.model);
+      next.visible=[...visible];next.knownModels=names;
+    }else if(Array.isArray(req.body.visible)){
+      if(!cachedModels)return fail(res,new Error("Refresh the model list before changing visibility"),400);
+      next.visible=[...new Set(req.body.visible.filter(n=>names.includes(n)))];next.knownModels=names;
     }
-    if(typeof req.body.unloadPrevious==="boolean")settings.unloadPrevious=req.body.unloadPrevious;
-    if(typeof req.body.autoDiscover==="boolean")settings.autoDiscover=req.body.autoDiscover;
-    saveSettings();res.json({ok:true,settings});
+    if(typeof req.body.unloadPrevious==="boolean")next.unloadPrevious=req.body.unloadPrevious;
+    if(typeof req.body.autoDiscover==="boolean")next.autoDiscover=req.body.autoDiscover;
+    const old=settings;
+    settings=next;
+    try{saveSettings()}catch(error){settings=old;throw error}
+    if(selected!==undefined&&previous!==selected){closeAgent();if(settings.unloadPrevious)void unload(previous)}
+    res.json({ok:true});
   }catch(e){fail(res,e)}
 });
 app.get("/api/workspace",(req,res)=>res.json({workspace:settings.workspace}));
@@ -611,11 +721,35 @@ app.get("/api/agent/pending",(req,res)=>{
   res.json({pending:[...pending.values()].map(permissionView)});
 });
 app.post("/api/agent/permission",(req,res)=>{
-  const p=pending.get(req.body?.requestId);if(!p)return fail(res,new Error("Request expired"),404);
+  const p=pending.get(req.body?.requestId);
+  if(!p||Date.now()>=p.expiresAt||activeRun?.record.id!==p.sessionId||activeRun.controller.signal.aborted){
+    if(p)resolvePermission(p,null);
+    return fail(res,new Error("Request expired or cancelled"),404);
+  }
   const id=req.body?.optionId??null;
   if(id!==null&&!p.options.some(o=>o.optionId===id))return fail(res,new Error("Unknown permission option"),400);
+  const allow=p.options.some(o=>o.optionId===id&&o.kind==="allow_once");
+  const reevaluated=p.evaluate();
+  if(allow&&reevaluated.outcome==="deny"){
+    resolvePermission(p,null);
+    return fail(res,new Error("Current security policy blocks this operation"),403);
+  }
+  if(req.body?.persistent!==undefined){
+    const effect=req.body.persistent;
+    if(!["allow","deny"].includes(effect)||allow!==(effect==="allow")||!p.scope||
+       reevaluated.scope?.fingerprint!==p.scope.fingerprint||effect==="allow"&&!p.scope.structured)
+      return fail(res,new Error("This operation cannot be stored with that scope"),400);
+    if(settings.permissionRules.some(rule=>rule.fingerprint===p.scope.fingerprint&&rule.workspace===p.scope.workspace&&rule.effect==="deny")&&effect==="allow")
+      return fail(res,new Error("Revoke the existing denial before granting permission"),403);
+    const previous=settings.permissionRules;
+    const remaining=previous.filter(rule=>rule.fingerprint!==p.scope.fingerprint||rule.workspace!==p.scope.workspace);
+    if(remaining.length>=1000)return fail(res,new Error("Revoke an existing rule before adding another"),409);
+    const {workspace,fingerprint,structured,label}=p.scope;
+    settings.permissionRules=[...remaining,{id:randomUUID(),workspace,fingerprint,structured,label:protect(label),effect}];
+    try{saveSettings()}catch(error){settings.permissionRules=previous;return fail(res,error)}
+  }
   if(req.body?.remember===true){
-    if(!p.key||!p.options.some(o=>o.optionId===id&&o.kind==="allow_once"))return fail(res,new Error("This operation cannot be approved for the session"),400);
+    if(!p.key||!allow)return fail(res,new Error("This operation cannot be approved for the session"),400);
     if(sessionReads.size>=1000)sessionReads.delete(sessionReads.keys().next().value);
     sessionReads.set(p.key,true);
   }
@@ -646,6 +780,58 @@ app.post("/api/agent/reset",(req,res)=>{
   if(busy)return fail(res,new Error("Agent busy"),409);
   closeAgent();res.json({ok:true});
 });
+async function saveCheckpoint(record,user,reply,{attemptedAt=new Date().toISOString(),readError}={}){
+  const target=vault();
+  if(!target||record.mode!=="agent"||!reply.tools?.length||!shouldCheckpoint(user.text,reply.tools))return null;
+  const previous=record.memoryCheckpoint;
+  const lastSuccessful=previous?.lastSuccessful||null;
+  const options={vault:target,version:VERSION,workspace:record.workspace,sessionId:record.id,messageId:reply.id,
+    prompt:user.text,reply:reply.text,tools:reply.tools,modified:record.task?.modified,status:record.status,model:record.model,attemptedAt};
+  for(let attempt=0;;attempt++){
+    try{
+      const result=checkpointObsidian(options);
+      return record.memoryCheckpoint={...result,lastAttempted:attemptedAt,lastSuccessful:attemptedAt,
+        messageId:reply.id,contextError:readError?safe(readError):undefined,contextNote:readError?.note};
+    }catch(error){
+      if(attempt<3&&["EPERM","EBUSY","EACCES"].includes(error.code)){
+        await delay(80*2**attempt);
+        continue;
+      }
+      console.warn("Obsidian checkpoint failed: "+safe(error));
+      return record.memoryCheckpoint={saved:false,error:safe(error),note:error.note||null,lastSuccessful,
+        lastAttempted:attemptedAt,messageId:reply.id,vault:target};
+    }
+  }
+}
+app.post("/api/sessions/:id/checkpoint/retry",async(req,res)=>{
+  if(busy||terminal)return fail(res,new Error("Finish active work before retrying a checkpoint"),409);
+  busy=true;
+  try{
+    const record=store.get(req.params.id);
+    const previous=record?.memoryCheckpoint;
+    if(record?.mode!=="agent"||!previous?.error||!vault()||previous.vault!==vault())
+      return fail(res,new Error("There is no retryable checkpoint for the configured vault"),409);
+    const reply=record.messages.at(-1),user=record.messages.at(-2);
+    if(reply?.id!==previous.messageId||user?.role!=="user")
+      return fail(res,new Error("Retry is available for the latest Agent turn"),409);
+    const result=await saveCheckpoint(record,user,reply);
+    store.save(record);
+    res.json({checkpoint:result});
+  }catch(error){fail(res,error,400)}
+  finally{busy=false}
+});
+app.get("/api/obsidian",(_req,res)=>res.json({vault:vault(),managed:!!process.env.LOCAL_AGENT_OBSIDIAN_VAULT||process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT==="1"}));
+app.post("/api/obsidian",(req,res)=>{
+  const input=req.body?.vault;
+  if(busy||process.env.LOCAL_AGENT_OBSIDIAN_VAULT||process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT==="1")
+    return fail(res,new Error("The vault cannot be changed right now"),409);
+  if(input!==null&&(typeof input!=="string"||!path.isAbsolute(input)||!isFolder(input)))
+    return fail(res,new Error("Choose an existing vault folder"),400);
+  const previous=settings.vault;
+  settings.vault=input===null?null:path.resolve(input);
+  try{saveSettings();res.json({vault:vault()})}
+  catch(error){settings.vault=previous;fail(res,error)}
+});
 async function run(req,res){
   if(busy||terminal||gitMutating||unloadPending||updater.status().download?.state==="running")return fail(res,new Error("Finish the active task, terminal, Git change, model unload or download first"),409);
   const prompt=String(req.body?.prompt||"").trim();
@@ -675,14 +861,19 @@ async function run(req,res){
   busy=true;
   res.writeHead(200,{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-store","connection":"keep-alive","x-accel-buffering":"no"});
   const controller=new AbortController();
-  activeRun={record,reply,res,controller,toolRequests:new Map(),timer:null,lastSave:Date.now()};
+  metrics=null;
+  const source=record.mode==="agent"?"goose":providerSelection?.id||"ollama";
+  activeRun={record,reply,res,controller,toolRequests:new Map(),timer:null,lastSave:Date.now(),startedAt:performance.now(),
+    measurements:{source,sessionId:record.id,model:record.model,configuredContext:source==="goose"?settings.contextTokens||32768:source==="ollama"?settings.contextTokens:null}};
   emit("start",{session:compact(record),model:record.model});
-  let stopReason=null, before=null;
+  publishMetrics("running");
+  let stopReason=null, before=null, memoryReadError=null;
   try{
     if(record.mode==="plan"){
       const streamOptions={endpoint:OLLAMA,model:record.model,contextTokens:settings.contextTokens,
-        onMetrics:value=>{if(settings.usageMeasurements)metrics={...value,model:record.model,measuredAt:new Date().toISOString()}},messages:record.messages,signal:controller.signal,onText:text=>{
+        onMetrics:recordUsage,messages:record.messages,signal:controller.signal,onText:text=>{
         reply.text+=text;
+        measureText(text);
         emit("text",{text});queueFlush();
       }};
       if(providerSelection?.provider.cloud)streamOptions.messages=record.messages.map(message=>({...message,text:redactSecrets(message.text||"")}));
@@ -701,11 +892,11 @@ async function run(req,res){
       const agent=await openAgent(record,controller.signal);
       if(!agent.native&&hadHistory)emit("status",{update:"Restoring conversation from saved transcript"});
       const context=!agent.native?contextFallback(record):"";
-      const memoryWork=!!vault()&&process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT!=="1"&&shouldCheckpoint(prompt);
+      const memoryWork=!!vault()&&shouldCheckpoint(prompt);
       let memoryContext="";
       if(memoryWork){
         try{memoryContext=readProjectContext(vault(),record.workspace)}
-        catch(error){emit("memory",{saved:false,error:"Could not read project memory: "+safe(error)})}
+        catch(error){memoryReadError=error;console.warn("Could not read project memory: "+safe(error))}
       }
       const memoryRule="WiskHarness handles project notes in the background. Leave the vault unchanged and summarize changed files, commands, tests, and pending work in your final answer.\n";
       const prefix="Local execution verified: file access="+status.filesystem+", PowerShell="+status.terminal+
@@ -719,6 +910,7 @@ async function run(req,res){
         sessionId:active.gooseSessionId,prompt:[{type:"text",text:prefix+context+memoryContext+prompt}]
       });
       stopReason=response.stopReason;
+      if(Number.isInteger(response.usage?.totalTokens)&&response.usage.totalTokens>=0)recordUsage({acpSessionTokens:response.usage.totalTokens});
       reply.status=response.stopReason==="cancelled"||controller.signal.aborted?"cancelled":"completed";
     }
     if(activeRun?.interrupting)reply.status="interrupted";
@@ -728,6 +920,9 @@ async function run(req,res){
     else if(controller.signal.aborted){reply.status="cancelled";record.status="cancelled";stopReason="cancelled"}
     else{reply.status="error";record.status="error";reply.error=safe(e);emit("error",{message:safe(e)})}
   }finally{
+    if(reply.error&&/\b429\b|rate limit/i.test(reply.error))recordUsage({rateLimited:true});
+    if(activeRun)activeRun.finished=true;
+    publishMetrics(reply.status);
     reply.text=protect(reply.text);
     if(record.mode==="agent"){
       record.task.status=record.status;
@@ -739,16 +934,9 @@ async function run(req,res){
         record.task.modified=captured.changes.map(change=>change.name);
       }catch(error){record.task.reviewError=safe(error)}
     }
-    if(record.mode==="agent")try{
-      const result=checkpointObsidian({vault:vault(),version:VERSION,workspace:record.workspace,sessionId:record.id,
-        messageId:reply.id,prompt:user.text,reply:reply.text,tools:reply.tools,modified:record.task?.modified,status:record.status,model:record.model,
-        enabled:!!vault()&&process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT!=="1"});
-      record.memoryCheckpoint=result;
-      if(result.saved)emit("memory",{saved:true,description:"Project and Now notes saved",status:result.status});
-    }catch(e){
-      record.memoryCheckpoint={saved:false,error:safe(e)};
-      console.warn("Obsidian checkpoint failed: "+safe(e));
-      emit("memory",{saved:false,error:"Obsidian checkpoint failed: "+safe(e)});
+    if(!activeRun?.interrupting){
+      const result=await saveCheckpoint(record,user,reply,{readError:memoryReadError});
+      if(result)emit("memory",{...result,sessionId:record.id});
     }
     try{flush()}catch(e){console.error("Final session save failed: "+safe(e));emit("error",{message:"Chat could not be saved: "+safe(e)})}
     emit("done",{stopReason,session:compact(record)});
@@ -757,12 +945,12 @@ async function run(req,res){
   }
 }
 async function probeACP() {
-  if(!fs.existsSync(GOOSE))return {ok:false,error:"Install Goose CLI first."};
   let proc, connection, timer;
   try {
-    proc=spawn(GOOSE,["acp","--with-builtin","developer"],{
+    const runtime=await gooseRuntime.verify(settings.gooseRuntime,AbortSignal.timeout(15000));
+    proc=spawn(runtime.file,["acp","--with-builtin","developer"],{
       windowsHide:true,stdio:["pipe","pipe","ignore"],
-      env:{...process.env,GOOSE_PROVIDER:"ollama",GOOSE_MODE:"approve",GOOSE_PATH_ROOT:GOOSE_ROOT}
+      env:{...gooseEnvironment(),GOOSE_PROVIDER:"ollama",GOOSE_MODE:"approve"}
     });
     const stream=acp.ndJsonStream(Writable.toWeb(proc.stdin),Readable.toWeb(proc.stdout));
     connection=acp.client({name:"WiskHarness diagnostics"}).connect(stream);
@@ -773,7 +961,7 @@ async function probeACP() {
     const init=await Promise.race([connection.agent.request(acp.methods.agent.initialize,{
       protocolVersion:acp.PROTOCOL_VERSION,clientCapabilities:{}
     }),error]);
-    return {ok:true,loadSession:!!init.agentCapabilities?.loadSession};
+    return {ok:true,source:runtime.source,version:runtime.version,loadSession:!!init.agentCapabilities?.loadSession};
   } catch(error) {
     return {ok:false,error:safe(error)};
   } finally {
@@ -782,6 +970,36 @@ async function probeACP() {
     proc?.kill();
   }
 }
+app.get("/api/goose-runtime",(_req,res)=>res.json(gooseStatus()));
+app.post("/api/goose-runtime",async(req,res)=>{
+  if(busy)return fail(res,new Error("Stop the current run before changing Goose runtimes."),409);
+  const {source,path:customPath}=req.body||{};
+  if(!gooseSources.includes(source)||source==="custom"&&
+    (typeof customPath!=="string"||!customPath.trim()||customPath.length>1024)) {
+    return fail(res,new Error("Choose a Goose runtime and provide its executable path when required."),400);
+  }
+  const selection=source==="custom"?{source,path:customPath.trim()}:{source};
+  try{
+    if(source!=="auto")await gooseRuntime.verify(selection,AbortSignal.timeout(15000));
+    if(busy)return fail(res,new Error("Stop the current run before changing Goose runtimes."),409);
+    const previous=settings.gooseRuntime;
+    settings.gooseRuntime=selection;
+    try{saveSettings()}catch(error){settings.gooseRuntime=previous;throw error}
+    closeAgent();
+    cachedPreflight=null;
+    res.json(gooseStatus());
+  }catch(error){fail(res,error,400)}
+});
+app.post("/api/goose-runtime/install",async(req,res)=>{
+  if(req.body?.version!==GOOSE_RELEASE.version)return fail(res,new Error("Confirm the exact Goose release before downloading."),400);
+  if(busy||gooseStatus().installing)return fail(res,new Error("Wait for current work to finish before downloading Goose."),409);
+  if(settingsError)return fail(res,new Error(settingsError),409);
+  try{
+    await gooseRuntime.install();
+    cachedPreflight=null;
+    res.json(gooseStatus());
+  }catch(error){fail(res,error)}
+});
 app.get("/api/setup",(_req,res)=>res.json({configured:settings.setupComplete,workspace:settings.workspace,
   model:settings.model,vault:vault()||"",workspaceOnly:settings.workspaceOnly,windows:process.platform==="win32"&&process.arch==="x64"}));
 app.post("/api/setup",async(req,res)=>{
@@ -819,8 +1037,10 @@ app.get("/api/diagnostics",async(req,res)=>{
     try{tailscale=JSON.parse(result.stdout).BackendState==="Running"?"Connected":"Disconnected"}catch{}
   }
   const checks=preflight(true);
+  const acp=req.query.probe==="1"?await probeACP():null;
+  const goose=gooseStatus();
   res.json({windows:process.platform==="win32"&&process.arch==="x64",ollamaInstalled:OLLAMA_INSTALLED,modelsCount,ollamaError,
-    gooseInstalled:fs.existsSync(GOOSE),acp:req.query.probe==="1"?await probeACP():null,
+    gooseInstalled:goose.detected,gooseRuntime:goose,acp,
     checks, freeBytes, storageError, vault:vault() ? (isFolder(vault())?"Available":"Unavailable"):"Disabled",
     tailscaleInstalled,tailscale});
 });
@@ -829,7 +1049,7 @@ app.get("/api/diagnostic-report",async(_req,res)=>{
   const installed=await models().catch(()=>null);
   res.json({format:"wiskharness-diagnostics",schema:1,generatedAt:new Date().toISOString(),appVersion:VERSION,
     platform:process.platform,architecture:process.arch,osRelease:os.release(),node:process.version,electron:process.versions.electron||null,
-    goose:{installed:fs.existsSync(GOOSE),initialized:!!active},ollama:{reachable:!!installed,models:installed?.length??null},
+    goose:{installed:gooseStatus().detected,initialized:!!active},ollama:{reachable:!!installed,models:installed?.length??null},
     providers:providerAPI.list().map(({id,enabled,connected,testedAt})=>({id,enabled,connectionVerified:connected,testedAt})),
     workspace:{fileCheck:checks.filesystem,powerShellCheck:checks.terminal,commandPromptCheck:checks.cmd},
     sessionStorage:{settingsReadable:!settingsError},obsidian:{available:!!vault()&&isFolder(vault())},
@@ -851,10 +1071,11 @@ app.post("/api/agent-instructions",(req,res)=>{
 });
 app.get("/api/models/diagnostics",async(_req,res)=>{
   let loaded=[],ollamaError=null;
+  const cpuPercent=settings.usageMeasurements?sampleCpu():null;
   try{
     loaded=(await ollamaApi("/api/ps")).models||[];
   }catch(error){ollamaError=safe(error)}
-    res.json({selected:settings.model,contextTokens:settings.contextTokens,metrics,ollamaError,usageMeasurements:settings.usageMeasurements,
+    res.json({selected:settings.model,contextTokens:settings.contextTokens,metrics,ollamaError,cpuPercent,usageMeasurements:settings.usageMeasurements,
       systemMemory:settings.usageMeasurements?{total:os.totalmem(),used:os.totalmem()-os.freemem()}:null,
       loaded:loaded.map(model=>({name:model.name||model.model,size:model.size,vram:model.size_vram,
         context:model.context_length ?? null,expiresAt:model.expires_at}))});
@@ -974,15 +1195,8 @@ async function cleanup(){
     activeRun.record.status="interrupted";
     activeRun.reply.status="interrupted";
     const record=activeRun.record,reply=activeRun.reply;
-    const lastPrompt=[...record.messages].reverse().find(m=>m.role==="user")?.text||"";
-    if(record.mode==="agent")try{
-      record.memoryCheckpoint=checkpointObsidian({
-        vault:vault(),version:VERSION,workspace:record.workspace,sessionId:record.id,
-        messageId:reply.id,prompt:lastPrompt,reply:reply.text,tools:reply.tools,
-        status:"interrupted",model:record.model,
-        enabled:!!vault()&&process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT!=="1"
-      });
-    }catch(e){record.memoryCheckpoint={saved:false,error:safe(e)};console.warn("Interrupted checkpoint failed: "+safe(e))}
+    const lastPrompt=[...record.messages].reverse().find(m=>m.role==="user");
+    if(lastPrompt)await saveCheckpoint(record,lastPrompt,reply);
     try{flush()}catch(e){console.warn("Interrupted session persistence failed: "+safe(e))}
   }
   activeRun?.controller.abort();

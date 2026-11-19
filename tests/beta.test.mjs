@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assessTool,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
+import { assessTool,permissionScope,permissionDecision,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
 import { credentialStore,parseModelRef,providerClient,providerConfig } from "../providers.mjs";
 import { workspaceGit } from "../git-workspace.mjs";
 
@@ -130,4 +130,34 @@ test("Git review safely stages, unstages and commits an explicitly reviewed fixt
   assert.equal(git("rev-parse","--short","HEAD").trim(),result.commit);
   assert.equal(fs.readFileSync(path.join(root,"tracked.txt"),"utf8"),"after\n");
   assert.match(git("status","--porcelain"),/ M tracked.txt/);
+});
+
+
+test("Full access automatically approves Goose shell and opaque tools while retaining explicit denials", t=>{
+  const work=temporary(t);
+  const shellCall={title:"shell",kind:"execute",rawInput:{command:"Write-Output FULL_ACCESS_TEST"}};
+  const policy={...securityDefaults,permissionMode:"full",permissionRules:[]};
+  const decision=assessTool({call:shellCall,workspace:work,policy});
+  const scope=permissionScope(shellCall,decision,work);
+  assert.equal(decision.category,"execute");
+  assert.equal(decision.denied,false);
+  assert.equal(scope.shell,true);
+  assert.equal(permissionDecision(decision,scope,policy),"allow");
+  assert.equal(permissionDecision(decision,scope,{...policy,permissionMode:"ask"}),"ask");
+  assert.equal(permissionDecision(decision,scope,{...policy,permissionMode:"auto"}),"ask");
+  assert.equal(permissionDecision(decision,scope,{...policy,permissionRules:[{
+    workspace:scope.workspace,fingerprint:scope.fingerprint,effect:"deny"
+  }]}),"deny");
+  const unknown={title:"developer operation",kind:"other",rawInput:{value:"sample"}};
+  const unstructured=assessTool({call:unknown,workspace:work,policy});
+  assert.equal(permissionScope(unknown,unstructured,work),null);
+  assert.equal(permissionDecision(unstructured,null,policy),"allow");
+  const protectedCall={title:"view",kind:"read",rawInput:{command:"view",path:".env"}};
+  const protectedDecision=assessTool({call:protectedCall,workspace:work,policy});
+  assert.equal(protectedDecision.denied,true);
+  assert.equal(permissionDecision(protectedDecision,null,policy),"deny");
+  const restricted=assessTool({call:shellCall,workspace:work,policy:{
+    ...policy,toolPolicies:{...policy.toolPolicies,execute:"deny"}
+  }});
+  assert.equal(permissionDecision(restricted,scope,policy),"deny");
 });

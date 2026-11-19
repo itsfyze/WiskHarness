@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.3-beta.1
+
+- Added installed, portable and custom Goose runtime choices to setup and Settings. Automatic prefers a compatible installed copy. The official portable download requires confirmation and verifies both the archive and the extracted executable.
+- Added Goose version and ACP compatibility checks before Agent startup and kept native sessions in the existing WiskHarness profile.
+- Refined the desktop navigation, Plan and Agent workspaces, composer, project and model views, settings, setup, diagnostics, selectors and approval surfaces. All seven themes remain available.
+- Added a release step that builds the icon-equipped version-matched Windows uninstall launcher and generates SHA-256 checksums for all three executables.
+
+## 0.7.2-beta.2
+
+- Fixed Full access auto-approval for real Goose ACP shell and other opaque tool requests. Previously these were automatically denied despite Full access being selected.
+- Kept Ask and Approve for me behavior, explicit deny rules, and inspectable protected-path checks; Plan mode remains tool-free.
+- Clarified the Full access confirmation: shell commands run under the Windows account and can bypass workspace and credential restrictions through their effects. This is not a process sandbox.
+- Added automated policy and real Goose shell-execution regression checks. Local Windows beta builds only; publication status is tracked separately.
+
+## 0.7.2-beta.1
+
+- Added three Agent permission modes, exact workspace-scoped rules, revocation, and a persistent Full access indicator.
+- Added formatted Markdown to streaming and saved chats, with sanitized links, syntax highlighting, tables and code copying.
+- Fixed model visibility toggles so they preserve search, scroll and active generation.
+- Added a compact performance panel with Ollama timing and token counts, optional ACP measurements, context and host CPU and RAM.
+- Fixed partial Obsidian checkpoint recovery on Windows. Chat completion and checkpoint failures have separate statuses. Project notes update their current status fields and retain history.
+- Refined composer selectors and shared chevrons across the seven themes.
+
 ## 0.7.1 beta candidate
 
 - Added tool-free Plan adapters for LM Studio, compatible loopback APIs, OpenAI, Anthropic, Google Gemini and OpenRouter. Agent mode still uses Goose ACP and Ollama.
