@@ -8,6 +8,8 @@ Copy-Item (Join-Path $root "package.json") (Join-Path $stage "package.json") -Fo
 Copy-Item (Join-Path $root "package-lock.json") (Join-Path $stage "package-lock.json") -Force
 Copy-Item (Join-Path $root "server.mjs") (Join-Path $stage "server.mjs") -Force
 Copy-Item (Join-Path $root "goose-runtime.mjs") (Join-Path $stage "goose-runtime.mjs") -Force
+Copy-Item (Join-Path $root "agent-web.mjs") (Join-Path $stage "agent-web.mjs") -Force
+Copy-Item (Join-Path $root "agent-web-mcp.mjs") (Join-Path $stage "agent-web-mcp.mjs") -Force
 Copy-Item (Join-Path $root "security-policy.mjs") (Join-Path $stage "security-policy.mjs") -Force
 Copy-Item (Join-Path $root "providers.mjs") (Join-Path $stage "providers.mjs") -Force
 Copy-Item (Join-Path $root "git-workspace.mjs") (Join-Path $stage "git-workspace.mjs") -Force

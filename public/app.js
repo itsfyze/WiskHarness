@@ -1,4 +1,4 @@
-import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace, gooseRuntimeLabel } from "./workbench.js";
+import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace, gooseRuntimeLabel, mountInternet } from "./workbench.js";
 import {bindPopovers, closePopover, openPopover, refreshPopover} from "./popover.js";
 import {renderMarkdown} from "./markdown.js";
 import {mountPerformance} from "./performance.js";
@@ -299,6 +299,12 @@ function renderChats(){
     scrollChat();
   }
   updateInspector();
+  if(!plan){
+    const webControl=document.createElement("span");
+    webControl.className="composer-internet";
+    $("#save-status").before(webControl);
+    void mountInternet(webControl,false,state.busy);
+  }
   if(s?.mode==="agent"&&(s.memoryCheckpoint?.error||s.memoryCheckpoint?.contextError))notifyCheckpoint(s.id,s.memoryCheckpoint);
   void mountPermissions($("#permission-trigger"),api,post,toast);
   updatePerformance();

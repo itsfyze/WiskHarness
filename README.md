@@ -26,6 +26,10 @@ To remove an installed copy, use Windows Installed apps or the matching releaseâ
 
 ## Data and updates
 
+Agent Mode offers an **Internet access** switch in the composer and under **Settings â†’ Agent internet access**. It starts off and applies to the next Agent turn. The built-in tools can read public text pages and search public GitHub issues and pull requests or Wikipedia. For broader search, supply the public HTTPS search endpoint of a [SearXNG instance with JSON enabled](https://docs.searxng.org/dev/search_api.html). Page retrieval works without a search provider or API key.
+
+Web tools return source URLs and limit requests to public addresses. They do not read local files or inherit browser credentials. Queries go to the selected search service. Switching Internet access starts a fresh native Goose session on the next turn and carries over saved chat context. Shell commands can still use the network under Windows permissions, including in Full access.
+
 Chats and workspaces are saved to a per-user profile. The desktop app recognizes existing Local Agent settings and sessions. Goose native sessions remain in the local profile, with transcript recovery when native restoration is unavailable.
 
 Settings can preview and save a diagnostic report, export a private text-chat and settings backup, and validate a restore before applying it. Backup restores skip chat IDs already present. Enter provider keys again on the destination PC.

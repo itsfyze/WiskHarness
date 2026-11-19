@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3-beta.2
+
+- Added optional Internet access in the Agent composer and Settings. The preference defaults off, persists, and takes effect on the next Agent turn.
+- Added Goose ACP tools to search public GitHub issues and pull requests or Wikipedia, query an optional SearXNG service, and open public text pages with source URLs.
+- Added public-address and redirect validation, connection deadlines, response limits, and readable tool errors. Shell networking remains governed by Windows and the selected Agent permissions.
+
 ## 0.7.3-beta.1
 
 - Added installed, portable and custom Goose runtime choices to setup and Settings. Automatic prefers a compatible installed copy. The official portable download requires confirmation and verifies both the archive and the extracted executable.

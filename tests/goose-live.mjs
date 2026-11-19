@@ -20,6 +20,7 @@ await stat(goose);
 const exists=async name=>stat(join(workspace,name)).then(()=>true,()=>false);
 const headers={"X-WiskHarness-Session":nonce,"Content-Type":"application/json"};
 const tasks=new Map();
+const internetChecks=new Map();
 let child,logs="",mockProblem=null;
 const ollama=createServer(async(req,res)=>{
   try{
@@ -34,9 +35,18 @@ const ollama=createServer(async(req,res)=>{
     const data=JSON.parse(Buffer.concat(chunks));
     const recent=data.messages.filter(message=>message.role==="user").at(-1)?.content;
     const prompt=typeof recent==="string"?recent:recent?.map(part=>part.text||"").join(" ")||"";
-    const marker=/\[fixture:([\w-]+)\]/.exec(prompt)?.[1];
+    const marker=[...prompt.matchAll(/\[fixture:([\w-]+)\]/g)].at(-1)?.[1];
     const task=tasks.get(marker);
     const tools=data.tools?.map(tool=>tool.function.name)||[];
+    const internet=internetChecks.get(marker);
+    if(internet&&data.tools){
+      assert.equal(tools.some(name=>name.endsWith("__open_page")),internet.enabled,tools.join(", "));
+      assert.equal(tools.some(name=>name.endsWith("__search_web")),internet.enabled,tools.join(", "));
+      if(internet.result&&data.messages.at(-1)?.role==="tool"){
+        assert.match(String(data.messages.at(-1).content),internet.result);
+        internet.received=true;
+      }
+    }
     const previousTool=data.messages.some(message=>message.role==="tool");
     let message={role:"assistant",content:"Fixture response complete."};
     if(process.argv.includes("--trace"))console.log("provider fixture",req.url,marker,tools,previousTool,data.messages.map(m=>m.role));
@@ -101,9 +111,9 @@ async function stop(){
   await exited;
 }
 let sessionId;
-async function run(name,operation,decide,{mode="agent",text="Perform the fixture operation"}={}){
+async function run(name,operation,decide,{mode="agent",text="Perform the fixture operation",existing}={}){
   if(operation)tasks.set(name,operation);
-  const {session}=await api("/api/sessions",{mode,model,workspace},201);
+  const {session}=existing?await api("/api/sessions/"+existing):await api("/api/sessions",{mode,model,workspace},201);
   sessionId=session.id;
   const response=await fetch(base+"/api/sessions/"+session.id+"/run",{method:"POST",headers,
     body:JSON.stringify({prompt:text+" [fixture:"+name+"]"}),signal:AbortSignal.timeout(170000)});
@@ -135,6 +145,32 @@ try{
   await api("/api/setup",{workspace,vault,model});
   const initial=await api("/api/security");
   assert.equal(initial.permissionMode,"ask");
+  if(process.argv.includes("--web")){
+    assert.equal((await api("/api/agent/internet")).enabled,false);
+    assert.equal((await api("/api/agent/internet",{searchEndpoint:"http://127.0.0.1/search"},400)).error.includes("blocked"),true);
+    internetChecks.set("web-off",{enabled:false});
+    await run("web-off");
+    const previous=sessionId;
+    await api("/api/agent/internet",{enabled:true});
+    for(const [marker,operation,result] of [
+      ["web-open",{name:"open_page",args:{url:"https://nodejs.org/api/url.html"}},/Source: https:\/\/nodejs\.org\/api\/url\.html/],
+      ["web-search",{name:"search_web",args:{query:"repo:nodejs/node URL canParse",source:"technical"}},/https:\/\/github\.com\/nodejs\/node\/(?:issues|pull)\//],
+      ["web-private",{name:"open_page",args:{url:"http://127.0.0.1"}},/private and reserved addresses are blocked/],
+      ["web-http-error",{name:"open_page",args:{url:"https://nodejs.org/api/wiskharness-missing.html"}},/returned HTTP 404/]
+    ]){
+      const check={enabled:true,result};
+      internetChecks.set(marker,check);
+      await run(marker,operation,event=>turn(event,"allow"),marker==="web-open"?{existing:previous}:undefined);
+      assert.equal(check.received,true,marker+" must return real tool output to the model");
+    }
+    const same=sessionId;
+    await stop();await start();
+    assert.equal((await api("/api/agent/internet")).enabled,true);
+    await api("/api/agent/internet",{enabled:false});
+    internetChecks.set("web-disabled",{enabled:false});
+    await run("web-disabled",null,null,{existing:same});
+    console.log("PASS Goose registers the web tools only while enabled, retrieves public documentation and GitHub results, reports network and private-address errors, and persists the preference.");
+  }
   const denyShell={name:"shell",args:{command:"New-Item -ItemType File -Path deny.txt"}};
   const denied=await run("denied-shell",denyShell,async event=>{
     await api("/api/models/settings",{visibility:{model,visible:false}});

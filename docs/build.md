@@ -33,6 +33,7 @@ The standalone launcher opens the native Windows uninstaller for the matching re
 Run npm tests for the ordinary regression suite. The following manual checks require their external runtimes and create disposable profiles.
 
 - Node tests/goose-live.mjs --expiry uses installed Goose ACP with a deterministic, loopback Ollama-compatible fixture. It exercises the Windows shell against a temporary workspace, persistent permission rules and restart, expiry, cancellation, and Obsidian failure and recovery.
+- Node tests/goose-live.mjs --web verifies registration against the real Goose process, uses live public websites and GitHub Search, and checks tool removal after disabling access on a previously enabled chat. The same fixture continues through the installed Goose regression tests.
 - Node tests/electron-qa.mjs <unpacked-or-installed-exe> installed qa exercises the production renderer using a loopback fixture. It tests Markdown streaming, persistence, clipboard, sanitization, model visibility and the selectors at five CSS sizes across seven themes. An optional fourth argument captures the 2560×1440 performance panel.
 - Node tests/electron-qa.mjs <portable-exe> portable live runs the production portable executable against the local Ollama service. The live smoke check expects the documented Llama 3.2 fixture model in the QA script.
 - Node tests/electron-qa.mjs <installed-exe> installed live exercises the same smoke check through an installed copy. Run this with a disposable per-user install.

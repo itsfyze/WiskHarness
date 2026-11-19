@@ -165,6 +165,9 @@ body { font-size: 13px; }
 .composer-buttons { gap: 6px; }
 .composer-buttons .btn:not(.btn-primary) { background: transparent; }
 .composer-buttons .btn:not(.btn-primary):hover { background: var(--hover); }
+.composer-internet { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.internet-toggle[aria-checked="true"] { color: var(--accent); border-color: var(--accent); }
+.composer-internet [role="status"]:empty { display: none; }
 .runtime-notice {
   display: flex;
   flex-wrap: wrap;

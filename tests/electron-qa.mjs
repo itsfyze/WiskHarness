@@ -28,17 +28,52 @@ const chunks=[
   '<img src="https://example.com/blocked" onerror="window.wiskUnsafe=true"><script>window.wiskUnsafe=true</script>'
 ];
 let tags=0,planPayload,streamCalls=0;
+const webOperations={
+  page:{tool:"open_page",args:{url:"https://nodejs.org/api/url.html"},result:/Source: https:\/\/nodejs\.org\/api\/url\.html/},
+  search:{tool:"search_web",args:{query:"repo:nodejs/node URL canParse",source:"technical"},result:/https:\/\/github\.com\/nodejs\/node\/(?:issues|pull)\//},
+  local:{tool:"open_page",args:{url:"http://127.0.0.1"},result:/private and reserved addresses are blocked/},
+  missing:{tool:"open_page",args:{url:"https://nodejs.org/api/wiskharness-missing.html"},result:/returned HTTP 404/}
+};
+let webFixtureError;
 const fake=createServer(async(req,res)=>{
   if(req.url==="/api/tags"){tags++;return res.end(JSON.stringify({models:models.map(name=>({name,size:4e9}))}))}
   if(req.url==="/api/ps")return res.end(JSON.stringify({models:[{name:model,context_length:16384,size_vram:3e9}]}));
   if(runtimeQA&&req.url==="/api/show")return res.end(JSON.stringify({model_info:{"fixture.context_length":16384},capabilities:["completion","tools"]}));
   if(runtimeQA&&req.url==="/api/version")return res.end('{"version":"0.12.0"}');
   if(runtimeQA&&req.url==="/v1/chat/completions"){
-    for await(const _part of req){}
+    const parts=[];
+    for await(const part of req)parts.push(part);
+    const data=JSON.parse(Buffer.concat(parts));
+    const lastUser=data.messages.findLast(item=>item.role==="user")?.content;
+    const marker=[...(typeof lastUser==="string"?lastUser:JSON.stringify(lastUser??"")).matchAll(/\[web:(\w+)\]/g)].at(-1)?.[1];
+    let message={role:"assistant",content:"Portable Goose fixture response."};
+    const operations=data.tools?.map(item=>item.function.name)||[];
+    if(marker&&operations.length){
+      try{
+        const check=webOperations[marker];
+        assert.equal(operations.some(name=>name.endsWith("__open_page")),!!check);
+        assert.equal(operations.some(name=>name.endsWith("__search_web")),!!check);
+        const last=data.messages.at(-1);
+        if(check&&last.role!=="tool"){
+          message={role:"assistant",tool_calls:[{index:0,id:"call_web_"+marker,type:"function",
+            function:{name:operations.find(name=>name.endsWith("__"+check.tool)),arguments:JSON.stringify(check.args)}}]};
+        }else if(check){
+          const result=typeof last.content==="string"?last.content:JSON.stringify(last.content);
+          assert.match(result,check.result);
+          message={role:"assistant",content:"Verified web fixture "+marker+"."};
+        }else{
+          message={role:"assistant",content:"Verified web fixture off."};
+        }
+      }catch(error){
+        webFixtureError=error;
+        res.statusCode=500;
+        return res.end(JSON.stringify({error:{message:error.message}}));
+      }
+    }
     res.setHeader("content-type","text/event-stream");
     const envelope={id:"wisk-packaged-fixture",object:"chat.completion.chunk",created:1,model};
     const frame=(delta,finish_reason)=>"data: "+JSON.stringify({...envelope,choices:[{index:0,delta,finish_reason}]})+"\n\n";
-    return res.end(frame({role:"assistant",content:"Portable Goose fixture response."},null)+frame({},"stop")+"data: [DONE]\n\n");
+    return res.end(frame(message,null)+frame({},message.tool_calls?"tool_calls":"stop")+"data: [DONE]\n\n");
   }
   if(req.url!=="/api/chat"){res.statusCode=404;return res.end("{}")}
   const buffer=[];
@@ -230,8 +265,35 @@ async function checkPortableGoose(page, setup) {
   await reopened.locator("#chat-send").filter({hasText:"Send"}).waitFor();
   const second=(await api(reopened,"/api/sessions/"+first.id)).session;
   assert.equal(second.gooseSessionId,first.gooseSessionId);
+  const toggle=view=>view.getByRole("switch",{name:"Internet access"});
+  const waitForToggle=(view,checked)=>view.getByRole("switch",{name:"Internet access",checked}).waitFor();
+  async function webTurn(view,marker,approval=false){
+    await view.locator("#chat-input").fill("[web:"+marker+"]");
+    await view.locator("#chat-send").click();
+    if(approval)await view.getByRole("button",{name:"Allow once",exact:true}).click({timeout:40000});
+    await view.locator("#chat-send").filter({hasText:"Send"}).waitFor({timeout:45000});
+    if(webFixtureError)throw webFixtureError;
+    await view.locator(".assistant-text").getByText("Verified web fixture "+marker+".",{exact:true}).last().waitFor();
+  }
+  await waitForToggle(reopened,false);
+  await toggle(reopened).click();
+  await waitForToggle(reopened,true);
+  for(const marker of Object.keys(webOperations))await webTurn(reopened,marker,true);
+  await stop();
+  const restored=await start();
+  recordErrors(restored);
+  await waitForToggle(restored,true);
+  await restored.locator("#navigation [data-view=settings]").click();
+  await restored.getByRole("navigation",{name:"Settings sections"}).getByRole("button",{name:"Agent internet access",exact:true}).click();
+  await waitForToggle(restored,true);
+  await toggle(restored).click();
+  await waitForToggle(restored,false);
+  await restored.locator("#navigation [data-view=chats]").click();
+  await waitForToggle(restored,false);
+  await webTurn(restored,"off");
   assert.deepEqual(errors,[]);
   console.log("PASS "+kind+" official portable Goose download, runtime persistence, ACP inference, and native session restoration with system Goose disabled");
+  console.log("PASS "+kind+" Composer and Settings Internet access switches, preference restoration, real web tools, source URLs and useful failure results");
 }
 
 try{
@@ -365,12 +427,13 @@ try{
     await page.locator("#permission-trigger").waitFor();
     await checkMarkdown(page);
     await page.locator(".session-row[data-session='"+sessions[0].id+"'] .session-button").click();
+    await page.locator(".session-row.active[data-session='"+sessions[0].id+"']").waitFor();
     await page.locator(".assistant-text h2").first().waitFor();
   }
   await stop();
   const reopened=await start();recordErrors(reopened);
   await reopened.locator(".assistant-text").filter({hasText:suite==="qa"?"Rendered answer":/WISK.BETA.CHECK/i}).first().waitFor({timeout:25000});
-  assert.equal(await reopened.locator(".session-row.active").getAttribute("data-session"),sessions[0].id);
+  await reopened.locator(".session-row.active[data-session='"+sessions[0].id+"']").waitFor();
   if(suite==="qa"){
     await checkMarkdown(reopened);
     await reopened.locator("[data-view=models]").click();

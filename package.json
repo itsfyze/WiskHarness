@@ -1,14 +1,14 @@
 {
   "name": "wiskharness",
   "private": true,
-  "version": "0.7.3-beta.1",
+  "version": "0.7.3-beta.2",
   "type": "module",
   "main": "desktop/electron-main.cjs",
   "description": "Self-hosted Windows coding assistant with local and cloud Plan models",
   "author": "WiskHarness",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check goose-runtime.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
+    "check": "node --check server.mjs && node --check goose-runtime.mjs && node --check agent-web.mjs && node --check agent-web-mcp.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
     "desktop": "electron .",
     "stage:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/stage-runtime.ps1",
     "build:win": "npm run stage:runtime && electron-builder --win portable nsis --x64",
@@ -19,10 +19,14 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.5.0",
     "@highlightjs/cdn-assets": "11.12.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "dompurify": "3.4.18",
     "express": "^5.1.0",
+    "html-to-text": "10.0.1",
+    "ipaddr.js": "2.5.0",
     "marked": "18.2.1",
-    "semver": "7.8.6"
+    "semver": "7.8.6",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "electron": "45.3.4",
@@ -50,6 +54,8 @@
           "package.json",
           "server.mjs",
           "goose-runtime.mjs",
+          "agent-web.mjs",
+          "agent-web-mcp.mjs",
           "security-policy.mjs",
           "providers.mjs",
           "git-workspace.mjs",

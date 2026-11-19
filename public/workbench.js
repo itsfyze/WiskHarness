@@ -61,6 +61,57 @@ function organizeSettings(panel) {
   }
 }
 
+const internetHelp = "Controls WiskHarness web tools. Shell commands can still use the network, including in Full access.";
+
+export async function mountInternet(target, inSettings=false, running=false) {
+  if(!target)return;
+  try{
+    let data=await request("/api/agent/internet");
+    if(!target.isConnected)return;
+    const output=document.createElement("span");
+    output.className="inline-help";
+    output.setAttribute("role","status");
+    const toggle=document.createElement("button");
+    toggle.type="button";
+    toggle.className="btn btn-small internet-toggle";
+    toggle.setAttribute("role","switch");
+    toggle.setAttribute("aria-label","Internet access");
+    toggle.title=internetHelp;
+    function draw(){
+      toggle.setAttribute("aria-checked",String(data.enabled));
+      toggle.textContent="Internet access · "+(data.enabled?"On":"Off");
+    }
+    toggle.disabled=running;
+    async function update(body, action) {
+      toggle.disabled=true;
+      if(action)action.disabled=true;
+      output.textContent="";
+      try{
+        data=await request("/api/agent/internet",body);
+        draw();
+        output.textContent=action?"Search endpoint saved.":data.enabled?"Built-in web tools enabled.":"Built-in web tools disabled.";
+      }catch(error){output.textContent=error.message}
+      finally {toggle.disabled=running;if(action)action.disabled=false}
+    }
+    toggle.onclick=()=>void update({enabled:!data.enabled});
+    draw();
+    target.replaceChildren(toggle);
+    if(inSettings){
+      const section=document.createElement("div");
+      section.innerHTML='<p class="inline-help">'+internetHelp+'</p>'+
+        '<label class="field-label" for="agent-search-endpoint">SearXNG search URL (optional)</label>'+
+        '<div class="field-row"><input class="field" type="url" id="agent-search-endpoint" maxlength="2048" placeholder="https://your-search-host/search">'+
+        '<button class="btn" type="button">Save search URL</button></div>'+
+        '<p class="inline-help">GitHub and Wikipedia search work without setup. Broad search uses a public HTTPS SearXNG endpoint with JSON enabled. Page retrieval works independently.</p>';
+      const input=section.querySelector("input"),save=section.querySelector("button");
+      input.value=data.searchEndpoint;
+      save.onclick=()=>void update({searchEndpoint:input.value.trim()},save);
+      target.append(section);
+    }
+    target.append(output);
+  }catch(error){if(target.isConnected)target.textContent=error.message}
+}
+
 const gooseRuntimePanel = () => card("Goose runtime","Required for Agent Mode. Plan Mode can run without Goose.",
   '<div data-goose-runtime><p role="status">Looking for Goose…</p></div>');
 
@@ -411,6 +462,7 @@ export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChan
   if (!panel) return;
   panel.querySelector(".page-heading-row").insertAdjacentHTML("afterend",
     gooseRuntimePanel()+
+    card("Agent internet access","Public page retrieval and search",'<div data-internet-settings>Loading Internet access…</div>')+
     card("Security & permissions","Agent approvals and local data protection",'<div id="security-policy">Loading permissions…</div>')+
     card("Providers & models","Local endpoints and API access",'<div id="provider-settings">Loading providers…</div>')+
     card("Setup and diagnostics","Local dependencies, workspace and optional memory",button("open-setup","Open setup"))+
@@ -418,6 +470,7 @@ export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChan
   void mountVault(panel);
   panel.querySelector("#open-setup").onclick = () => void showSetup(onSaved,onGooseChanged);
   void mountGooseRuntime(panel,onGooseChanged);
+  void mountInternet(panel.querySelector("[data-internet-settings]"),true);
   void mountSecurity(panel);
   void mountProviders(panel,onModelsChanged);
   panel.insertAdjacentHTML("beforeend",
