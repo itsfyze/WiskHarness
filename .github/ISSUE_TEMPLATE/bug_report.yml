@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible WiskHarness problem
+body:
+  - type: input
+    id: version
+    attributes:
+      label: WiskHarness version
+      description: Include portable, setup, or source build.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include Windows version, chat mode, and provider if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Expected and observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Reviewed diagnostics
+      description: Review the report locally. Omit chats, project files, private paths, and credentials.

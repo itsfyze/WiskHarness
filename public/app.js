@@ -1,0 +1,724 @@
+import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace } from "./workbench.js";
+import {bindPopovers, closePopover, openPopover, refreshPopover} from "./popover.js";
+
+const $=s=>document.querySelector(s),$$=s=>Array.from(document.querySelectorAll(s));
+const esc=x=>String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const TKEY="local-agent-ui-theme-v4",MKEY="local-agent-motion-v4",SKEY="local-agent-selected-session";
+const THEMES=[
+["graphite","Graphite","Classic dark","#0e1013","#141619","#24292f","#adbcfa"],
+["midnight","Midnight","Deep navy","#09101c","#101a2a","#21304a","#99baff"],
+["oled","OLED Black","High contrast","#050507","#0c0c10","#1d1d24","#c3b5ff"],
+["forest","Forest","Muted green","#0b1412","#111e19","#22372c","#a5dfbc"],
+["amethyst","Amethyst","Soft violet","#140f1d","#1c1628","#332845","#d4b5ff"],
+["ember","Ember","Warm graphite","#18120f","#211913","#3f3027","#f2bc8d"],
+["pearl","Pearl","Light","#f4f6f9","#ffffff","#e9edf4","#476bd4"]
+];
+const state={view:"chats",sessions:[],session:null,modelData:null,health:null,projects:[],busy:false,activeRun:null};
+const MODE_KEY="local-agent-mode";
+const modeNames={plan:"Plan",agent:"Agent"};
+const modeDescriptions={plan:"Chat, brainstorm, and plan",agent:"Code, execute, and build"};
+const modeIcon=mode=>'<svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">'+(mode==="plan"?'<path d="M5 4h14v13H9l-4 4zM9 8h6m-6 4h6"/>':'<path d="m5 7 5 5-5 5m8 0h6"/>')+'</svg>';
+const currentMode=()=>state.session?.mode||(localStorage.getItem(MODE_KEY)==="agent"?"agent":"plan");
+const selectedModel=()=>state.view==="chats"?(state.session?.model||state.draftModel||state.providerData?.modeDefaults?.[currentMode()]||state.modelData?.selected):state.modelData?.selected;
+function modelIdentity(value){
+  const match=/^@provider\/([^/]+)\/(.+)$/.exec(value||"");
+  if(!match)return {label:value,provider:"Ollama",cloud:false};
+  const info=state.providerData?.providers.find(provider=>provider.id===match[1]);
+  return {label:match[2],provider:info?.name||match[1],cloud:!["lmstudio","compatible"].includes(match[1])};
+}
+const hasModelSource=()=>!!state.modelData||currentMode()==="plan"&&!!state.providerData;
+const runInView=()=>!!state.session&&state.session.id===(state.activeRun?.sessionId||state.health?.activeSessionId);
+const drafts=new Map();
+const draftKey=()=>state.session?.id||currentMode();
+function rememberDraft(){
+  const input=$("#chat-input");
+  if(input)drafts.set(draftKey(),input.value);
+}
+function showModePicker(anchor){
+  const node=document.createElement("div");
+  node.style.width="236px";
+  node.setAttribute("role","menu");
+  node.setAttribute("aria-label","Chat mode");
+  node.innerHTML='<div class="popover-list">'+Object.keys(modeNames).map(mode=>
+    '<button role="menuitemradio" aria-checked="'+(currentMode()===mode)+'" class="popover-item mode-row '+(currentMode()===mode?"active":"")+'" data-mode="'+mode+'">'+modeIcon(mode)+'<span><span class="option-name">'+modeNames[mode]+'</span><small>'+modeDescriptions[mode]+'</small></span><span class="option-check">'+(currentMode()===mode?"✓":"")+'</span></button>').join("")+'</div>';
+  node.onclick=event=>{
+    const mode=event.target.closest("[data-mode]")?.dataset.mode;
+    if(!mode)return;
+    closePopover(true);
+    if(mode!==currentMode()){
+      rememberDraft();navigationRequest++;
+      state.session=null;state.draftModel=null;
+      localStorage.removeItem(SKEY);localStorage.setItem(MODE_KEY,mode);
+      $("#chat-input")?.remove();
+      changeView("chats");renderSidebar();
+    }
+  };
+  openPopover(node,anchor);
+}
+const sid=id=>encodeURIComponent(id);
+function toast(message,type=""){const el=document.createElement("div");el.className="toast "+type;el.textContent=message;$("#toast-layer").append(el);setTimeout(()=>el.remove(),4300)}
+async function api(endpoint,options={}){
+  let r;try{r=await fetch(endpoint,{cache:"no-store",...options})}catch{throw new Error("Local backend is unavailable")}
+  let data={};try{data=await r.json()}catch{}
+  if(!r.ok)throw new Error(data.error||"HTTP "+r.status);return data;
+}
+const post=(url,data)=>api(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(data)});
+const patch=(url,data)=>api(url,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify(data)});
+const shortPath=p=>String(p||"").replace(/[\\/]$/,"").split(/[\\/]/).pop()||String(p||"");
+function applyTheme(){
+  const theme=THEMES.find(x=>x[0]===localStorage.getItem(TKEY))||THEMES[0];
+  document.body.dataset.theme=theme[0];document.body.dataset.motion=localStorage.getItem(MKEY)==="off"?"off":"on";
+  $("#theme-label").textContent=theme[1];
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content",theme[3]);
+  $$(".theme-tile").forEach(b=>{b.classList.toggle("selected",b.dataset.theme===theme[0]);b.setAttribute("aria-pressed",String(b.dataset.theme===theme[0]))});
+  const sw=$("#motion-checkbox");if(sw)sw.checked=document.body.dataset.motion==="on";
+}
+function setTheme(id){if(THEMES.some(t=>t[0]===id)){localStorage.setItem(TKEY,id);applyTheme()}}
+function renderTop(){
+  $("#view-title").textContent=state.view[0].toUpperCase()+state.view.slice(1);
+  $("#view-context").textContent=state.view==="chats"?(state.session?.title||"Workspace"):shortPath(state.health?.preflight?.workspace||"Local workspace");
+  const mode=currentMode();
+  $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong><span class="chevron" aria-hidden="true">⌄</span>';
+  const model=modelIdentity(selectedModel());
+  $("#model-label").textContent=model.label||"Choose model";
+  $("#model-trigger").title=$("#model-label").textContent;
+  const ok=!!(state.health?.ollama&&(mode==="plan"||state.health?.goose));
+  $("#connection-dot").classList.toggle("online",ok);$("#connection-text").textContent=ok?"Local runtime online":"Runtime unavailable";
+  $("#top-connection").textContent=state.busy?"Running":model.cloud?"Cloud · "+model.provider:model.provider!=="Ollama"?"Local · "+model.provider:state.health?.ollama?"Ollama connected":"Ollama offline";
+  $("#runtime-label").textContent=mode==="plan"?model.provider:"Goose ACP · Ollama";
+  $("#top-connection").classList.toggle("online",ok);
+  $("#model-trigger").disabled=!hasModelSource()||state.busy;
+}
+function changeView(view){
+  if(!["chats","agents","projects","models","settings"].includes(view))return;
+  closePopover();state.view=view;
+  $$(".nav-item").forEach(b=>{b.classList.toggle("active",b.dataset.view===view);b.setAttribute("aria-current",b.dataset.view===view?"page":"false")});
+  $(".sidebar").classList.remove("open");
+  renderTop();render();
+}
+function render(){
+  if(state.view==="chats")renderChats();
+  else if(state.view==="agents")renderAgents();
+  else if(state.view==="projects")renderProjects();
+  else if(state.view==="models")renderModels();
+  else if(state.view==="settings")renderSettings();
+}
+function renderSidebar(){
+  const query=$("#session-search").value.toLowerCase().trim();
+  $("#session-count").textContent=state.sessions.length;
+  const data=query?(state.searchQuery===query?state.searchResults:state.sessions.filter(s=>(s.title+" "+(s.preview||"")).toLowerCase().includes(query))):state.sessions;
+  $("#session-list").innerHTML=data.length?data.map(s=>'<div class="session-row '+(state.session?.id===s.id?"active":"")+'" data-session="'+esc(s.id)+'"><button class="session-button" data-action="open" title="'+esc(s.title)+'"><span class="session-title">'+esc(s.title)+'</span><span class="session-meta">'+modeNames[s.mode||"agent"]+' · '+(s.messageCount||0)+' messages</span></button><div class="session-actions"><button class="session-action" data-action="menu" aria-haspopup="menu" aria-expanded="false" title="Chat actions" aria-label="Chat actions">⋯</button></div></div>').join(""):'<p class="empty-sessions">'+(query?"No matching chats.":"Your chats will appear here after the first session.")+'</p>';
+}
+async function loadSessions(){state.sessions=(await api("/api/sessions")).sessions||[];$("#session-search").oninput?.()}
+async function loadModels(force=false){
+  [state.modelData,state.providerData]=await Promise.all([
+    api("/api/models"+(force?"?refresh=1":"")).catch(()=>null),
+    api("/api/providers").catch(()=>null)
+  ]);
+  renderTop();
+}
+async function loadProjects(){try{state.projects=(await api("/api/projects")).projects||[]}catch{state.projects=[]}}
+async function loadHealth(){try{state.health=await api("/api/health");state.busy=!!state.health.busy}catch{state.health={goose:false,ollama:false,preflight:{}};state.busy=false}renderTop()}
+let navigationRequest=0;
+async function openSession(id,change=true){
+  const request=++navigationRequest;
+  try{
+    const data=await api("/api/sessions/"+sid(id));
+    if(request!==navigationRequest)return;
+    rememberDraft();
+    const live=state.activeRun;
+    state.session=live?.sessionId===id?live.record:data.session;
+    localStorage.setItem(SKEY,id);
+    localStorage.setItem(MODE_KEY,state.session.mode);
+    if(change){
+      state.view="chats";
+      $$(".nav-item").forEach(button=>{
+        button.classList.toggle("active",button.dataset.view==="chats");
+        button.setAttribute("aria-current",button.dataset.view==="chats"?"page":"false");
+      });
+      $(".sidebar").classList.remove("open");
+    }
+    closePopover();renderTop();renderSidebar();if(state.view==="chats")renderChats();
+    return state.session;
+  }catch(e){toast("Open chat failed: "+e.message,"error")}
+}
+async function newSession(workspace,mode=currentMode(),model=state.draftModel){
+  try{
+    const data=await post("/api/sessions",{workspace,mode,model});
+    await loadSessions();
+    return await openSession(data.session.id);
+  }catch(e){toast(e.message,"error")}
+}
+async function handoff(id){
+  try{
+    const result=await post("/api/sessions/"+sid(id)+"/handoff",{});
+    await loadSessions();await openSession(result.session.id);$("#chat-input")?.focus();
+  }catch(e){toast(e.message,"error")}
+}
+function sessionMenu(anchor,id){
+  const node=document.createElement("div");
+  node.style.width="176px";node.setAttribute("role","menu");node.setAttribute("aria-label","Chat actions");
+  node.innerHTML='<div class="popover-list"><button class="popover-item" role="menuitem">Rename chat</button><button class="popover-item" role="menuitem">Delete chat</button></div>';
+  const [rename,remove]=node.querySelectorAll("button");
+  rename.onclick=()=>{closePopover(true);void renameSession(id)};
+  remove.onclick=()=>{closePopover(true);void deleteSession(id)};
+  openPopover(node,anchor);
+}
+function modal(title,description,options={}){
+  return new Promise(resolve=>{
+    const dialog=document.createElement("dialog");
+    dialog.className="modal";
+    dialog.setAttribute("aria-labelledby","modal-title");
+    dialog.innerHTML='<form method="dialog"><h2 id="modal-title">'+esc(title)+'</h2><p>'+esc(description)+'</p>'+(options.confirmOnly?"":'<input class="field" id="modal-value" aria-label="Chat name" maxlength="90" value="'+esc(options.value||"")+'" autofocus>')+'<div class="modal-actions"><button type="button" class="btn" id="modal-no" '+(options.confirmOnly?"autofocus":"")+'>Cancel</button><button class="btn '+(options.danger?"btn-danger":"btn-primary")+'" type="submit">'+esc(options.action||"Save")+'</button></div></form>';
+    let result=null;
+    dialog.querySelector("#modal-no").onclick=()=>dialog.close();
+    dialog.querySelector("form").onsubmit=event=>{
+      event.preventDefault();result=options.confirmOnly?true:dialog.querySelector("input").value;dialog.close();
+    };
+    dialog.addEventListener("close",()=>{dialog.remove();resolve(result)},{once:true});
+    $("#dialog-layer").append(dialog);dialog.showModal();
+  });
+}
+async function renameSession(id){
+  const item=state.sessions.find(s=>s.id===id);if(!item)return;
+  const title=await modal("Rename chat","Choose a short name for this conversation.",{value:item.title,action:"Rename"});
+  if(!title?.trim())return;
+  try{
+    await patch("/api/sessions/"+sid(id),{title:title.trim()});
+    if(state.session?.id===id)state.session.title=title.trim();
+    await loadSessions();renderTop();if(state.view==="chats")renderChats();
+    toast("Chat renamed","good");
+  }catch(e){toast(e.message,"error")}
+}
+async function deleteSession(id){
+  const item=state.sessions.find(s=>s.id===id);if(!item)return;
+  const confirmed=await modal("Delete chat?","This removes the locally saved conversation from the app. This action cannot be undone.",{confirmOnly:true,action:"Delete",danger:true});
+  if(!confirmed)return;
+  try{
+    await api("/api/sessions/"+sid(id),{method:"DELETE"});
+    if(state.session?.id===id){state.session=null;localStorage.removeItem(SKEY)}
+    await loadSessions();
+    if(!state.session&&state.sessions.length)await openSession(state.sessions[0].id,false);
+    renderTop();render();toast("Chat deleted","good");
+  }catch(e){toast(e.message,"error")}
+}
+function showModelPicker(anchor){
+  if(!hasModelSource()||state.busy)return;
+  const node=document.createElement("div");
+  node.setAttribute("role","dialog");node.setAttribute("aria-label","Select model");
+  node.innerHTML='<div class="popover-title">Select model</div><input class="field popover-search" type="search" aria-label="Search models" placeholder="Search installed models…"><div class="popover-list" role="listbox"></div><div class="popover-footer"><button id="refresh-pick-models">Refresh models</button><button id="manage-pick-models">Manage visibility</button></div>';
+  const input=node.querySelector("input"),list=node.querySelector(".popover-list");
+  function draw(){
+    const term=input.value.toLowerCase().trim(),selected=selectedModel(),visible=new Set(state.modelData?.visible||[]);
+    const groups=[{label:"Ollama · Local",models:(state.modelData?.models||[]).filter(model=>visible.has(model.name)||model.name===selected)}];
+    if(state.view==="chats"&&currentMode()==="plan"){
+      for(const provider of state.providerData?.providers||[]){
+        if(!provider.enabled||provider.cloud&&!provider.keySaved)continue;
+        groups.push({label:provider.name+(provider.cloud?" · Cloud":" · Local"),
+          models:[...new Set([provider.model,...provider.models].filter(Boolean))].map(model=>({name:"@provider/"+provider.id+"/"+model}))});
+      }
+    }
+    function option(m){
+      const label=modelIdentity(m.name).label;
+      return '<button class="popover-item '+(m.name===selected?"active":"")+'" data-model="'+esc(m.name)+'" role="option" aria-selected="'+(m.name===selected)+'"><span style="flex:1;min-width:0"><span class="option-name">'+esc(label)+'</span>'+
+        (Number.isFinite(m.size)?'<small>'+((m.size)/1073741824).toFixed(1)+' GB · '+esc(m.family||"Local model")+'</small>':"")+
+        '</span><span class="option-check">'+(m.name===selected?"✓":"")+'</span></button>';
+    }
+    list.innerHTML=groups.map(group=>{
+      const rows=group.models.filter(item=>(modelIdentity(item.name).label+" "+group.label).toLowerCase().includes(term));
+    rows.sort((a,b)=>Number(b.name===selected)-Number(a.name===selected)||a.name.localeCompare(b.name));
+      return rows.length?'<div class="popover-title" role="presentation">'+esc(group.label)+'</div>'+rows.map(option).join(""):"";
+    }).join("")||'<p class="empty-panel">No models matched.</p>';
+  }
+  draw();
+  if(!openPopover(node,anchor))return;
+  input.oninput=()=>{draw();refreshPopover(node)};
+  list.onclick=e=>{const el=e.target.closest("[data-model]");if(el){closePopover(true);selectModel(el.dataset.model)}};
+  node.querySelector("#refresh-pick-models").onclick=async()=>{
+    await loadModels(true);
+    if(!hasModelSource()){closePopover(true);toast("Model lists are unavailable","error");return}
+    if(node.isConnected){draw();refreshPopover(node)}
+  };
+  node.querySelector("#manage-pick-models").onclick=()=>changeView("models");
+}
+async function selectModel(name){
+  if(state.busy)return toast("Finish or stop the run before switching models","error");
+  const session=state.view==="chats"?state.session:null;
+  try{
+    if(session){
+      const {session:updated}=await patch("/api/sessions/"+sid(session.id),{model:name});
+      if(state.session?.id===session.id)state.session.model=updated.model;
+      await loadSessions();
+    }else if(state.view==="chats")state.draftModel=name;
+    else{await post("/api/models/settings",{model:name});await loadModels()}
+    rememberDraft();renderTop();render();toast("Selected "+modelIdentity(name).label,"good");
+    if(state.view==="chats")$("#composer-model")?.focus();
+  }catch(e){toast("Model selection: "+e.message,"error")}
+}
+function showThemes(anchor){
+  const node=document.createElement("div");node.style.width="260px";
+  node.innerHTML='<div class="popover-title">APPEARANCE</div><div class="popover-list">'+THEMES.map(t=>'<button class="popover-item" data-theme="'+t[0]+'"><span style="width:15px;height:15px;border-radius:4px;background:'+t[6]+'"></span><span>'+t[1]+'</span><span class="option-check">'+(document.body.dataset.theme===t[0]?"✓":"")+'</span></button>').join("")+'</div><div class="popover-footer"><button id="theme-options">Appearance settings</button></div>';
+  if(!openPopover(node,anchor))return;
+  node.querySelector(".popover-list").onclick=e=>{const t=e.target.closest("[data-theme]");if(t){setTheme(t.dataset.theme);closePopover()}};
+  node.querySelector("#theme-options").onclick=()=>changeView("settings");
+}
+function heading(label,title,desc,right=""){
+  return '<div class="page-heading-row"><div><h1 class="page-heading">'+esc(title)+'</h1><p class="page-desc">'+esc(desc)+'</p></div>'+right+'</div>';
+}
+
+function renderChats(){
+  renderTop();
+  const s=state.session,mode=currentMode(),plan=mode==="plan",running=runInView();
+  const model=modelIdentity(selectedModel()).label||"Choose model";
+  const placeholder=plan?"Ask a question or outline a plan…":"Describe the task…";
+  $("#content").innerHTML='<div class="chat-view '+mode+'"><div class="chat-main"><div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div><div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="2" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+(plan?"":'<button class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>')+'<button class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>⌄</button><span class="badge" id="save-status">'+(running?"Running":s?"Saved on PC":"Ready")+'</span><button class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+'</button></div></div></div></div>'+(plan?"":'<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>')+'</div>';
+  const body=$("#chat-body");
+  if(!s?.messages?.length){
+    body.innerHTML='<div class="chat-empty"><h1>'+(plan?"What are you planning?":"What should the agent work on?")+'</h1><p>'+(plan?"Ask a question, discuss an approach or draft a plan.":"Describe a coding task or ask the agent to inspect the workspace.")+'</p></div>';
+  }else{
+    const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",error:"Error"};
+    body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
+    for(const m of s.messages)appendMessage(m);
+    if(plan&&!running){
+      const action=document.createElement("button");action.className="btn btn-small";
+      action.textContent="Continue in Agent Mode";action.onclick=()=>handoff(s.id);body.append(action);
+    }
+    scrollChat();
+  }
+  updateInspector();
+  const mobile = matchMedia("(max-width: 960px)").matches;
+  if(!plan&&s){
+    let tools=$("#chat-inspector");
+    if(mobile){
+      tools=document.createElement("div");
+      tools.className="compact-workbench";
+      $(".composer-wrap").prepend(tools);
+    }
+    mountAgentTools(tools,s,prompt=>{
+      const input=$("#chat-input");if(!input)return;
+      input.value=prompt.slice(0,16000);input.dispatchEvent(new Event("input"));input.focus();
+    },()=>openSession(s.id,false));
+  }
+  const picker=$("#composer-model");
+  picker.disabled=!hasModelSource()||state.busy;
+  picker.onclick=e=>showModelPicker(e.currentTarget);
+  if($("#chat-attach"))$("#chat-attach").onclick=attachFile;
+  const send=$("#chat-send");
+  send.disabled=(state.busy&&!running)||!selectedModel()&&!running;
+  send.onclick=()=>running?cancelRun():runPrompt();
+  const input=$("#chat-input");
+  input.value=drafts.get(draftKey())||"";
+  input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!send.disabled&&!runInView())runPrompt()}};
+  input.oninput=e=>{e.target.style.height="auto";e.target.style.height=Math.min(190,e.target.scrollHeight)+"px";drafts.set(draftKey(),e.target.value)};
+}
+function displayAnswer(element,text){
+  element.replaceChildren();
+  const parts=String(text||"").split(/^\x60{3}[^\n]*\n?/m);
+  for(const [index,part] of parts.entries()){
+    if(index%2){const code=document.createElement("pre");code.textContent=part.trimEnd();element.append(code)}
+    else if(part)element.append(document.createTextNode(part));
+  }
+}
+function toolRow(tool){
+  const row=document.createElement("details");
+  row.className="tool-entry";row.dataset.tool=tool.id;
+  const label=document.createElement("summary");
+  label.textContent=tool.title+" · "+tool.status;
+  row.append(label);
+  for(const [name,value] of [["Input",tool.input],["Output",tool.output]]){
+    if(!value)continue;
+    const block=document.createElement("pre");block.textContent=value;block.setAttribute("aria-label",name);row.append(block);
+  }
+  return row;
+}
+function appendMessage(m){
+  let target=$("#messages");
+  if(!target){
+    const root=$("#chat-body");if(!root)return;
+    root.innerHTML='<div class="chat-heading"><strong>'+esc(state.session?.title||"Saved chat")+'</strong><span class="badge">SAVED ON PC</span></div><div id="messages"></div>';
+    target=$("#messages");
+  }
+  const block=document.createElement("article");block.className="message message-"+m.role;block.dataset.message=m.id;
+  if(m.role==="user"){
+    const bubble=document.createElement("div");bubble.className="user-bubble";bubble.textContent=m.text||"";block.append(bubble);
+  }else{
+    const row=document.createElement("div");row.className="assistant-row";
+    const icon=document.createElement("div");icon.className="assistant-icon";icon.innerHTML=modeIcon(currentMode());
+    const content=document.createElement("div");content.className="assistant-body";
+    const byline=document.createElement("div");byline.className="assistant-byline";byline.textContent="WiskHarness";
+    const answer=document.createElement("div");answer.className="assistant-text";displayAnswer(answer,m.text);
+    const activity=document.createElement("details");activity.className="message-tools";activity.hidden=currentMode()==="plan"||!(m.tools?.length);
+    activity.innerHTML='<summary>Tool activity (<span class="tool-count">'+(m.tools?.length||0)+'</span>)</summary><div class="tool-list"></div>';
+    for(const t of m.tools||[])activity.querySelector(".tool-list").append(toolRow(t));
+    const status=document.createElement("div");status.className="message-status";status.textContent=m.status==="streaming"?"Working…":m.status==="error"?(m.error||"Error"):m.status==="interrupted"?"Interrupted":m.status==="cancelled"?"Stopped":"";
+    if(m.status==="error")status.classList.add("error");
+    content.append(byline,answer,activity,status);row.append(icon,content);block.append(row);
+  }
+  target.append(block);return block;
+}
+function scrollChat(){const root=$("#chat-scroll");if(root)root.scrollTop=root.scrollHeight}
+function updateInspector(){
+  const panel=$("#chat-inspector");if(!panel)return;
+  const p=state.health?.preflight||{},s=state.session;
+  panel.innerHTML='<div class="inspector-group"><div class="inspector-label">AGENT</div><div class="inspector-info"><strong>Goose ACP + Ollama</strong><p>'+esc(s?.model||state.modelData?.selected||"No model")+'</p><p class="'+(state.health?.goose&&state.health?.ollama?"green":"")+'">'+(state.health?.goose&&state.health?.ollama?"Connected":"Setup needed")+'</p></div></div>'+
+    '<div class="inspector-group"><div class="inspector-label">SAVED SESSION</div><div class="inspector-list"><div class="inspector-item"><span>Storage</span><span>Local files</span></div><div class="inspector-item"><span>Messages</span><span>'+(s?.messages?.length||0)+'</span></div><div class="inspector-item"><span>Status</span><span>'+esc(s?.status||"Not started")+'</span></div></div></div>'+
+    '<div class="inspector-group"><div class="inspector-label">WORKING DIRECTORY</div><div class="inspector-info"><strong>'+esc(shortPath(s?.workspace||p.workspace||"Workspace"))+'</strong><p class="codepath">'+esc(s?.workspace||p.workspace||"Not configured")+'</p></div></div>'+
+    '<div class="inspector-group"><div class="inspector-label">TOOLS</div><div class="inspector-list"><div class="inspector-item"><span>File operations</span><span>'+(p.workspace===s?.workspace&&p.filesystem?"Verified":"Not checked")+'</span></div><div class="inspector-item"><span>PowerShell</span><span>'+(p.workspace===s?.workspace&&p.terminal?"Verified":"Not checked")+'</span></div></div></div>'+
+    '<p class="inline-help">The agent requests approval for tool operations that need permission.</p>';
+}
+async function attachFile(){
+  const picker=document.createElement("input");picker.type="file";picker.accept=".txt,.md,.java,.js,.json,.ts,.tsx,.css,.html,.xml,.yml,.yaml,.py,.log,.properties,.gradle";picker.hidden=true;document.body.append(picker);
+  picker.onchange=async()=>{
+    try{
+      const file=picker.files?.[0];if(!file)return;
+      if(file.size>12000)throw new Error("Choose a text file under 12 KB");
+      const text=await file.text(),addition="\n\nAttached "+file.name+":\n"+text+"\n",input=$("#chat-input");
+      if(!input)return;
+      if((input.value+addition).length>16000)throw new Error("Message exceeds the 16,000 character limit");
+      input.value+=addition;input.focus();toast("Text file attached","good");
+    }catch(e){toast(e.message,"error")}finally{picker.remove()}
+  };
+  picker.oncancel=()=>picker.remove();
+  picker.click();
+}
+async function runPrompt(){
+  if(state.activeRun||state.starting)return;
+  if(state.busy)return toast("The agent is already running another task","error");
+  const prompt=$("#chat-input")?.value.trim();if(!prompt)return;
+  if(!state.session){
+    state.starting=true;
+    try{if(!await newSession())return}
+    finally{state.starting=false}
+  }
+  const record=state.session,recordId=record.id;
+  const model=modelIdentity(record.model);
+  if(model.cloud){
+    state.starting=true;
+    try{
+      const agreed=await modal("Send chat to "+model.provider+"?","Your message and the text in this conversation will leave this PC. Review any pasted project content before sending. Your provider may charge for this request.",{confirmOnly:true,action:"Send to "+model.provider});
+      if(!agreed||state.session?.id!==recordId)return;
+    }finally{state.starting=false}
+  }
+  drafts.delete(draftKey());drafts.delete(currentMode());
+  state.activeRun={sessionId:recordId,record};state.busy=true;
+  record.status="running";
+  const stamp=Date.now();
+  const user={id:"optimistic-user-"+stamp,role:"user",text:prompt,createdAt:new Date().toISOString()};
+  const reply={id:"optimistic-assistant-"+stamp,role:"assistant",text:"",status:"streaming",tools:[],createdAt:new Date().toISOString()};
+  state.session.messages.push(user,reply);
+  if(state.session.title==="New chat")state.session.title=prompt.replace(/\s+/g," ").slice(0,75);
+  renderTop();renderChats();scrollChat();
+  let remainder="",completed=false;
+  function onEvent(event){
+    if(event.type==="text"){
+      reply.text+=event.text||"";
+      const el=document.querySelector('[data-message="'+reply.id+'"] .assistant-text');
+      if(el){el.textContent=reply.text;scrollChat()}
+    }else if(event.type==="tool"){
+      const t=event.update||{},idx=reply.tools.findIndex(x=>x.id===t.id);
+      if(idx>=0)reply.tools[idx]=t;else reply.tools.push(t);
+      const details=document.querySelector('[data-message="'+reply.id+'"] .message-tools');
+      if(details){
+        details.hidden=false;details.querySelector(".tool-count").textContent=reply.tools.length;
+        const list=details.querySelector(".tool-list");
+        const previous=[...list.children].find(row=>row.dataset.tool===t.id), next=toolRow(t);
+        if(previous){next.open=previous.open;previous.replaceWith(next)}else list.append(next);
+      }
+    }else if(event.type==="task"){record.task=event.task;}
+    else if(event.type==="permission")showPermission(event);
+    else if(event.type==="permission-resolved")dismissPermission(event.requestId);
+    else if(event.type==="memory"&&!event.saved){toast(event.error||"Project notes could not be saved","error")}
+    else if(event.type==="error"){reply.status="error";reply.error=event.message;toast(event.message,"error")}
+    else if(event.type==="done"){reply.status=event.session.status;completed=true}
+    else if(event.type==="start"){if(runInView())$("#save-status")?.replaceChildren(document.createTextNode("Running"));record.status="running"}
+    const marker=document.querySelector('[data-message="'+reply.id+'"] .message-status');
+    if(marker)marker.textContent=reply.status==="error"?reply.error:completed?"Saved":"Working…";
+  }
+  try{
+    const response=await fetch("/api/sessions/"+sid(recordId)+"/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt,cloudConsent:model.cloud?record.model:undefined})});
+    if(!response.ok){let err={};try{err=await response.json()}catch{}throw new Error(err.error||"HTTP "+response.status)}
+    const reader=response.body.getReader(),decoder=new TextDecoder();
+    while(true){
+      const data=await reader.read();if(data.done)break;
+      remainder+=decoder.decode(data.value,{stream:true});
+      let p;while((p=remainder.indexOf("\n\n"))>=0){
+        const block=remainder.slice(0,p);remainder=remainder.slice(p+2);
+        for(const line of block.split("\n"))if(line.startsWith("data: ")){
+          try{onEvent(JSON.parse(line.slice(6)))}catch(e){console.warn("SSE event ignored: "+e.message)}
+        }
+      }
+    }
+  }catch(e){reply.status="error";reply.error=e.message;toast(e.message,"error")}
+  finally{
+    state.activeRun=null;state.busy=false;
+    try{
+      const record=(await api("/api/sessions/"+sid(recordId))).session;
+      rememberDraft();
+      if(state.session?.id===recordId)state.session=record;
+      await Promise.all([loadSessions(),loadHealth()]);
+      if(state.view==="chats")renderChats();
+    }catch(e){toast("Could not verify the saved session: "+e.message,"error")}
+    if(state.view==="chats"){$("#chat-input")?.focus();scrollChat()}
+  }
+}
+async function cancelRun(){
+  const button=$("#chat-send");
+  if(button){button.disabled=true;button.textContent="Stopping…"}
+  try{await post("/api/agent/cancel",{sessionId:state.session?.id})}
+  catch(e){if(button){button.disabled=false;button.textContent="Stop"}toast(e.message,"error")}
+}
+const permissions=new Map();
+function dismissPermission(id){
+  const item=permissions.get(id);
+  if(!item)return;
+  clearTimeout(item.timer);item.dialog.close();item.dialog.remove();permissions.delete(id);
+}
+function showPermission(event){
+  if(permissions.has(event.requestId))return;
+  const dialog=document.createElement("dialog");dialog.className="modal permission-modal";
+  const title=document.createElement("h2");title.textContent="Tool approval required";
+  dialog.setAttribute("aria-label",title.textContent);
+  const description=document.createElement("p");description.textContent=event.title||"Goose requested permission to run a tool.";
+  dialog.append(title,description);
+  if(event.workspace){
+    const scope=document.createElement("p");scope.textContent="Workspace · "+event.workspace+(event.outside?.length?". Explicit paths outside workspace · "+event.outside.join(", "):". Review any paths outside this folder.")+" Tools use your Windows permissions.";
+    dialog.append(scope);
+  }
+  if(event.details){const details=document.createElement("pre");details.textContent=event.details;dialog.append(details)}
+  const actions=document.createElement("div");actions.className="modal-actions";
+  const policy=document.createElement("p");
+  policy.textContent="Operation · "+event.category+" · "+(event.policy==="allow"?"Allow eligible reads":"Ask every time");
+  dialog.append(policy);
+  async function answer(optionId,remember=false){
+    for(const button of actions.children)button.disabled=true;
+    try{await post("/api/agent/permission",{requestId:event.requestId,optionId,remember});dismissPermission(event.requestId)}
+    catch(e){dismissPermission(event.requestId);toast(e.message,"error")}
+  }
+  const deny=document.createElement("button");deny.className="btn btn-danger";deny.textContent="Deny";deny.autofocus=true;
+  const reject=event.options?.find(choice=>choice.kind==="reject_once");
+  deny.onclick=()=>answer(reject?.optionId??null);actions.append(deny);
+  for(const choice of event.options||[]){
+    if(choice.kind!=="allow_once")continue;
+    const button=document.createElement("button");button.className="btn btn-primary";button.textContent="Approve once";
+    button.onclick=()=>answer(choice.optionId);actions.append(button);
+    if(event.canRemember){
+      const sessionButton=document.createElement("button");sessionButton.className="btn";sessionButton.textContent="Allow this file for the session";
+      sessionButton.onclick=()=>answer(choice.optionId,true);actions.append(sessionButton);
+    }
+  }
+  dialog.addEventListener("cancel",e=>{e.preventDefault();deny.click()});
+  dialog.append(actions);$("#dialog-layer").append(dialog);
+  permissions.set(event.requestId,{dialog,timer:setTimeout(()=>dismissPermission(event.requestId),Math.max(0,(event.expiresAt||Date.now()+120000)-Date.now()))});
+  dialog.showModal();
+}
+
+function statusRows(rows){
+  return '<div class="status-list">'+rows.map(([label,value])=>'<div class="status-line"><span>'+esc(label)+'</span><span>'+esc(value)+'</span></div>').join("")+'</div>';
+}
+function card(title,description,content,action=""){
+  return '<section class="card"><div class="card-header"><div><h2>'+esc(title)+'</h2><p>'+esc(description)+'</p></div>'+action+'</div><div class="card-content">'+content+'</div></section>';
+}
+function renderAgents(){
+  const h=state.health||{},p=h.preflight||{};
+  const result=value=>value===true?"Verified":value===false?"Failed":"Not checked";
+  const model=state.session?.mode==="agent"?state.session.model:h.model;
+  const connection=card("Backend connections","Connection diagnostics",statusRows([
+    ["Goose ACP",h.gooseInitialized?"Session initialized":h.goose?"CLI installed":"Missing"],
+    ["Ollama",h.ollama?"Connected":"Offline"],["Current model",model||"Unavailable"]]));
+  const capabilities=card("Local capabilities","Workspace preflight",statusRows([
+    ["File read and write",result(p.filesystem)],["PowerShell",result(p.terminal)],
+    ["Command Prompt",result(p.cmd)],["Tool approval","Ask for permission"]]),
+    '<button class="btn btn-small" id="run-agent-checks">Recheck</button>');
+  const folder=card("Active project folder","Default for new chats",'<div class="codepath">'+esc(p.workspace||"Choose a directory")+'</div>',
+    '<button class="btn btn-small" id="agents-folder">Change folder</button>');
+  const errors=p.errors?.length?card("Diagnostic errors","Latest workspace preflight","<ul>"+p.errors.map(error=>"<li>"+esc(error)+"</li>").join("")+"</ul>"):"";
+  $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("","Local runtime","Inspect backend connections and check local capabilities.",'<button class="btn btn-primary" id="agent-new">New Agent chat</button>')+
+    '<div class="cards cols-2">'+connection+capabilities+folder+errors+'</div></div></div>';
+  $("#agent-new").onclick=()=>newSession(undefined,"agent",null);
+  $("#agents-folder").onclick=()=>changeView("settings");
+  $("#run-agent-checks").onclick=async event=>{
+    event.currentTarget.disabled=true;
+    try{await api("/api/preflight");await loadHealth();if(state.view==="agents")renderAgents()}
+    catch(e){toast(e.message,"error");if(state.view==="agents")renderAgents()}
+  };
+}
+function renderProjects(){
+  $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("LOCAL FOLDERS","Projects","Manage the folders available to new chats.",'<button class="btn" id="projects-refresh">Refresh</button>')+
+    '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Add a project</h2><p>Enter an existing Windows directory</p></div></div><div class="card-content"><div class="field-row"><input id="project-path" class="field" aria-label="Project folder" placeholder="C:\\Users\\…\\Documents\\My Project"><button class="btn btn-primary" id="project-add">Add</button></div><p class="inline-help">New chats use the active folder. Already saved chats retain their own original workspace.</p></div></section>'+
+    '<section class="card"><div class="card-header"><div><h2>Registered folders</h2><p>Workspace and saved chat count</p></div></div><div id="project-list">'+(state.projects.length?state.projects.map(p=>
+      '<div class="project-row"><span class="project-icon">▣</span><span class="project-desc"><strong>'+esc(p.name)+'</strong><small>'+esc(p.path)+'</small></span><span class="badge '+(p.active?"ok":p.exists?"":"warn")+'">'+(p.active?"Active":p.exists?"Saved":"Missing")+'</span><span class="badge">'+p.sessions+' chats</span>'+(p.active?"":'<button class="btn btn-small" data-activate="'+esc(p.path)+'">Use folder</button><button class="btn btn-small btn-danger" data-remove="'+esc(p.path)+'" title="Remove folder from list">Remove</button>')+'</div>').join(""):'<div class="empty-panel">No folders added yet.</div>')+'</div></section></div></div>';
+  $("#project-add").onclick=async()=>{
+    const folder=$("#project-path").value.trim();if(!folder)return toast("Enter a directory path","error");
+    try{await post("/api/projects",{path:folder});await loadProjects();renderProjects();toast("Folder added","good")}
+    catch(e){toast(e.message,"error")}
+  };
+  $("#project-path").onkeydown=e=>{if(e.key==="Enter")$("#project-add").click()};
+  $("#projects-refresh").onclick=async()=>{await loadProjects();renderProjects();toast("Projects refreshed")};
+  $$("[data-activate]").forEach(b=>b.onclick=async()=>{
+    try{await post("/api/workspace",{workspace:b.dataset.activate});await Promise.all([loadHealth(),loadProjects()]);renderProjects();toast("Active folder updated","good")}
+    catch(e){toast(e.message,"error")}
+  });
+  $$("[data-remove]").forEach(b=>b.onclick=async()=>{
+    try{await api("/api/projects",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({path:b.dataset.remove})});await loadProjects();renderProjects();toast("Removed from project list")}
+    catch(e){toast(e.message,"error")}
+  });
+  $("#project-list").querySelectorAll(".project-row").forEach((row,index)=>{
+    const project=state.projects[index];
+    if(!project?.exists)return;
+    const button=document.createElement("button");button.className="btn btn-small";button.textContent="Git";
+    button.setAttribute("aria-label","Git for "+project.name);
+    button.onclick=()=>void showGitWorkspace(project.path);
+    row.append(button);
+  });
+}
+function renderModels(){
+  const d=state.modelData,installed=d?.models||[],visible=d?.visible||[];
+  $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("OLLAMA","Models","Choose which installed Ollama models appear in the picker.",'<button class="btn" id="models-refresh">Refresh models</button>')+
+    '<div class="row-between" style="margin-bottom:14px"><input class="field" id="models-search" style="max-width:380px" placeholder="Search installed models…" aria-label="Search installed models"></div>'+
+    '<div class="table-wrap">'+(installed.length?'<table class="table"><thead><tr><th>Model</th><th>Disk size</th><th>Family</th><th>Visible</th><th>Default</th></tr></thead><tbody id="models-body"></tbody></table>':'<div class="empty-panel"><h3>No Ollama models loaded</h3>Start Ollama and refresh the model list.</div>')+'</div>'+
+    '<section class="card" style="margin-top:20px"><div class="card-header"><div><h2>Model loading</h2><p>Stored locally in app settings</p></div></div><div class="card-content"><div class="setting-row"><div><strong>Unload previous model</strong><small>Release model memory when switching</small></div><input type="checkbox" class="switch" id="unload-switch" aria-label="Unload previous model" '+(d?.unloadPrevious?"checked":"")+'></div><div class="setting-row"><div><strong>Auto-discover models</strong><small>Refresh installed models as needed</small></div><input type="checkbox" class="switch" id="discover-switch" aria-label="Auto-discover models" '+(d?.autoDiscover?"checked":"")+'></div></div></section></div></div>';
+  const body=$("#models-body");
+  const draw=()=>{
+    if(!body)return;
+    const term=$("#models-search").value.toLowerCase();
+    body.innerHTML=installed.filter(m=>m.name.toLowerCase().includes(term)).map(m=>
+      '<tr><td><strong>'+esc(m.name)+'</strong>'+'</td><td>'+((m.size||0)/1073741824).toFixed(1)+' GB</td><td>'+esc(m.family||"Unknown")+'</td><td><input type="checkbox" class="switch model-visible" data-model="'+esc(m.name)+'" aria-label="Show '+esc(m.name)+'" '+(visible.includes(m.name)?"checked":"")+'></td><td><button class="btn btn-small '+(m.name===d.selected?"btn-primary":"")+'" data-choose="'+esc(m.name)+'" '+(m.name===d.selected?"disabled":"")+'>'+(m.name===d.selected?"Selected":"Set default")+'</button></td></tr>').join("");
+    $$(".model-visible").forEach(sw=>sw.onchange=async()=>{
+      const before=d.visible.slice();
+      d.visible=sw.checked?[...new Set([...d.visible,sw.dataset.model])]:d.visible.filter(n=>n!==sw.dataset.model);
+      try{await post("/api/models/settings",{visible:d.visible});renderModels();toast("Visibility saved","good")}
+      catch(e){d.visible=before;renderModels();toast(e.message,"error")}
+    });
+    $$("[data-choose]").forEach(b=>b.onclick=()=>selectModel(b.dataset.choose));
+  };
+  if(body){draw();$("#models-search").oninput=draw}
+  $("#models-refresh").onclick=async()=>{await loadModels(true);if(state.view==="models")renderModels()};
+  void mountModelDiagnostics($("#content .page-width"));
+  const compatible=installed.map(model=>({value:model.name,label:model.name+" · Ollama"}));
+  for(const provider of state.providerData?.providers||[]){
+    if(!provider.enabled||provider.cloud&&!provider.keySaved)continue;
+    for(const model of new Set([provider.model,...provider.models].filter(Boolean))){
+      compatible.push({value:"@provider/"+provider.id+"/"+model,label:model+" · "+provider.name,cloud:provider.cloud});
+    }
+  }
+  void mountCompatibility($("#content .page-width"),compatible);
+  for(const [id,key] of [["unload-switch","unloadPrevious"],["discover-switch","autoDiscover"]]){
+    const control=$("#"+id);
+    control.disabled=!d;
+    control.onchange=async()=>{
+      try{await post("/api/models/settings",{[key]:control.checked});d[key]=control.checked;toast("Settings saved")}
+      catch(error){control.checked=!!d?.[key];toast(error.message,"error")}
+    };
+  }
+}
+function renderSettings(){
+  const directory=state.health?.preflight?.workspace||"";
+  $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("DESKTOP APP","Settings","Manage appearance, the default workspace and local runtime.")+
+    '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Appearance</h2><p>Choose a theme and motion preference</p></div></div><div class="card-content"><div class="tile-grid">'+THEMES.map(t=>
+      '<button class="theme-tile '+(document.body.dataset.theme===t[0]?"selected":"")+'" data-theme="'+t[0]+'" aria-pressed="'+(document.body.dataset.theme===t[0])+'"><span class="theme-swatch" style="background:'+t[3]+'"><i style="background:'+t[4]+'"></i><i style="background:'+t[5]+'"><b style="background:'+t[6]+'"></b></i></span><strong>'+t[1]+'</strong><small>'+t[2]+'</small></button>').join("")+'</div><div class="divider"></div><div class="setting-row"><div><strong>Interface animations</strong></div><input class="switch" type="checkbox" id="motion-checkbox" aria-label="Interface animations" '+(document.body.dataset.motion==="on"?"checked":"")+'></div></div></section>'+
+    '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Default project directory</h2><p>Used for newly created chats</p></div></div><div class="card-content"><label class="field-label" for="workspace-path">Windows folder</label><div class="field-row"><input class="field" id="workspace-path" value="'+esc(directory)+'"><button class="btn btn-primary" id="workspace-change">Use folder</button></div><p class="inline-help">Changing this does not move existing chats. Each chat stores its own workspace.</p></div></section>'+
+    '<section class="card"><div class="card-header"><div><h2>Runtime diagnostics</h2><p>Local backend and session storage</p></div><button class="btn btn-small" id="settings-check">Run checks</button></div><div class="card-content status-list"><div class="status-line"><span>Goose CLI</span><span class="'+(state.health?.goose?"green":"")+'">'+(state.health?.goose?"Installed":"Missing")+'</span></div><div class="status-line"><span>Ollama endpoint</span><span>'+esc(state.health?.ollamaEndpoint||"Unavailable")+'</span></div><div class="status-line"><span>Filesystem</span><span>'+(state.health?.preflight?.filesystem?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>PowerShell</span><span>'+(state.health?.preflight?.terminal?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>Session storage</span><span>Local files</span></div></div></section></div></div>';
+  $$(".theme-tile").forEach(b=>b.onclick=()=>{setTheme(b.dataset.theme);toast("Theme changed","good")});
+  $("#motion-checkbox").onchange=e=>{localStorage.setItem(MKEY,e.target.checked?"on":"off");applyTheme()};
+  $("#workspace-change").onclick=async()=>{
+    try{await post("/api/workspace",{workspace:$("#workspace-path").value.trim()});await Promise.all([loadHealth(),loadProjects()]);renderSettings();toast("Default directory saved","good")}
+    catch(e){toast(e.message,"error")}
+  };
+  $("#workspace-path").onkeydown=e=>{if(e.key==="Enter")$("#workspace-change").click()};
+  $("#settings-check").onclick=async()=>{try{state.health.preflight=await api("/api/preflight");renderSettings();toast("Diagnostics finished","good")}catch(e){toast(e.message,"error")}};
+  void mountSettings($("#content .page-width"),async()=>{
+    await Promise.all([loadHealth(),loadModels(),loadProjects(),loadSessions()]);
+    render();
+  },loadModels);
+}
+function bindEvents(){
+  $("#navigation").onclick=e=>{const view=e.target.closest("[data-view]")?.dataset.view;if(view)changeView(view)};
+  bindPopovers();
+  matchMedia("(max-width: 960px)").addEventListener("change",()=>{if(state.view==="chats"){rememberDraft();renderChats()}});
+  $("#mode-trigger").onclick=e=>showModePicker(e.currentTarget);
+  $("#new-session").onclick=async()=>{if(await newSession())$("#chat-input")?.focus()};
+  let searchTimer;
+  $("#session-search").oninput=()=>{
+    renderSidebar();clearTimeout(searchTimer);
+    const query=$("#session-search").value.toLowerCase().trim();
+    if(!query)return;
+    searchTimer=setTimeout(async()=>{
+      const result=await api("/api/sessions?q="+encodeURIComponent(query)).catch(()=>null);
+      if(result&&$("#session-search").value.toLowerCase().trim()===query){
+        state.searchQuery=query;state.searchResults=result.sessions;renderSidebar();
+      }
+    },180);
+  };
+  $("#session-list").onclick=e=>{
+    const action=e.target.closest("[data-action]"),item=e.target.closest("[data-session]");
+    if(!action||!item)return;
+    if(action.dataset.action==="open")openSession(item.dataset.session);
+    if(action.dataset.action==="menu")sessionMenu(action,item.dataset.session);
+  };
+  $("#model-trigger").onclick=e=>showModelPicker(e.currentTarget);
+  $("#theme-trigger").onclick=e=>showThemes(e.currentTarget);
+  function toggleSidebar(){
+    if(innerWidth<=720)$(".sidebar").classList.toggle("open");
+    else $(".shell").classList.toggle("sidebar-collapsed");
+  }
+  $("#mobile-menu").onclick=toggleSidebar;
+  $("#collapse-sidebar").onclick=toggleSidebar;
+  document.addEventListener("keydown",e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("#new-session").click()}
+  });
+  window.addEventListener("storage",e=>{if(e.key===TKEY||e.key===MKEY)applyTheme()});
+}
+async function importLegacy(){
+  const raw=localStorage.getItem("local-agent-history");if(!raw)return;
+  try{
+    const pairs=JSON.parse(raw);
+    if(Array.isArray(pairs)&&pairs.length){
+      const result=await post("/api/sessions/import",{pairs});
+      if(result.session&&!localStorage.getItem(SKEY))localStorage.setItem(SKEY,result.session.id);
+      toast("Older chat messages imported","good");
+    }
+    localStorage.removeItem("local-agent-history");
+  }catch(e){console.warn("Legacy chat will be kept until import succeeds: "+e.message)}
+}
+async function start(){
+  applyTheme();bindEvents();
+  try{
+    await importLegacy();
+    await Promise.all([loadHealth(),loadModels(),loadProjects(),loadSessions()]);
+    const remembered=localStorage.getItem(SKEY),item=state.sessions.find(s=>s.id===remembered)||(!localStorage.getItem(MODE_KEY)?state.sessions[0]:null);
+    if(item)await openSession(item.id,false);
+    else{renderTop();renderSidebar()}
+    render();
+    try{const data=await api("/api/agent/pending");for(const p of data.pending||[])showPermission(p)}catch{}
+    const setup=await api("/api/setup");
+    if(!setup.configured&&!document.querySelector("dialog[open]")){
+      void showSetup(async()=>{await Promise.all([loadHealth(),loadModels(),loadProjects()]);render();}).catch(error=>toast(error.message,"error"));
+    }else void notifyUpdate(()=>changeView("settings"));
+  }catch(e){
+    $("#content").innerHTML='<div class="empty-panel" style="padding:110px 20px"><h3>Backend unavailable</h3><p>'+esc(e.message)+'</p><button class="btn btn-primary" id="retry">Retry</button></div>';
+    $("#retry").onclick=()=>location.reload();toast("Connection failed: "+e.message,"error");
+  }
+  let polling=false;
+  setInterval(async()=>{
+    if(document.visibilityState!=="visible"||state.activeRun||polling)return;
+    polling=true;
+    try{
+      const wasBusy=state.busy;
+      await loadHealth();
+      if(!wasBusy&&state.busy&&state.view==="chats"){rememberDraft();renderChats()}
+      if(wasBusy&&!state.busy){
+        if(state.session)await openSession(state.session.id,false);
+        else if(state.view==="chats")renderChats();
+        await loadSessions();
+      }
+      if(state.busy){
+        const data=await api("/api/agent/pending").catch(()=>null);
+        if(data){
+          for(const id of permissions.keys())if(!data.pending.some(p=>p.requestId===id))dismissPermission(id);
+          for(const p of data.pending)showPermission(p);
+        }
+      }
+    }finally{polling=false}
+  },4000);
+}
+start();
