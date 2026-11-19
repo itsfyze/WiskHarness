@@ -56,6 +56,7 @@ function showModePicker(anchor){
       localStorage.removeItem(SKEY);localStorage.setItem(MODE_KEY,mode);
       $("#chat-input")?.remove();
       changeView("chats");renderSidebar();
+      if(anchor.id==="home-mode-trigger")$("#chat-input")?.focus();
     }
   };
   openPopover(node,anchor);
@@ -80,8 +81,12 @@ function applyTheme(){
 }
 function setTheme(id){if(THEMES.some(t=>t[0]===id)){localStorage.setItem(TKEY,id);applyTheme()}}
 function renderTop(){
-  $("#view-title").textContent=state.view[0].toUpperCase()+state.view.slice(1);
-  $("#view-context").textContent=state.view==="chats"?(state.session?.title||"Workspace"):shortPath(state.health?.preflight?.workspace||"Local workspace");
+  const home=state.view==="chats"&&!state.session?.messages?.length;
+  $(".main").classList.toggle("show-home",home);
+  $("#view-title").textContent=home?"New chat":state.view[0].toUpperCase()+state.view.slice(1);
+  $("#view-context").textContent=state.view==="chats"
+    ? home?shortPath(state.session?.workspace||state.health?.preflight?.workspace||"Workspace"):state.session.title
+    : shortPath(state.health?.preflight?.workspace||"Local workspace");
   const mode=currentMode();
   $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong>'+chevron;
   const model=modelIdentity(selectedModel());
@@ -272,23 +277,63 @@ function heading(label,title,desc,right=""){
   return '<div class="page-heading-row"><div><h1 class="page-heading">'+esc(title)+'</h1><p class="page-desc">'+esc(desc)+'</p></div>'+right+'</div>';
 }
 
+const homePrompts={
+  plan:[
+    ["Plan a feature","Help me plan a feature. Ask what I want to build, then outline the approach and tests."],
+    ["Review code","Review the code I share. Flag correctness issues and suggest tests.\n\n"],
+    ["Debug an error","Help me diagnose this error. Ask for any missing context before proposing a fix.\n\n"]
+  ],
+  agent:[
+    ["Inspect project","Inspect the current project and summarize its structure, entry points, and how to run its tests."],
+    ["Review code","Review the current project changes for bugs and missing tests. Leave files as they are and report findings."],
+    ["Debug an error","Help me debug this error in the current project. Start by identifying how to reproduce it.\n\n"]
+  ]
+};
+
+function chatComposer(mode,running,home){
+  const agent=mode==="agent";
+  const model=modelIdentity(selectedModel()).label||"Choose model";
+  const placeholder=agent?"Describe a task in this workspace…":"Ask a question or outline a plan…";
+  return '<div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="'+(home?1:2)+
+    '" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+
+    (home?'<button type="button" class="btn btn-small home-mode" id="home-mode-trigger" aria-label="Chat mode, '+modeNames[mode]+
+      '" aria-haspopup="menu" aria-expanded="false">'+modeIcon(mode)+modeNames[mode]+chevron+'</button>':"")+
+    (agent?'<button type="button" class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>':"")+
+    '<button type="button" class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>'+chevron+'</button>'+
+    (agent?'<button type="button" class="btn btn-small permission-trigger" id="permission-trigger" aria-haspopup="menu" aria-expanded="false"></button>':"")+
+    '<span class="badge" id="save-status" '+(home?"hidden":"")+'>'+(running?"Running":"Saved on PC")+'</span>'+
+    (home?'<div id="composer-performance"></div>':"")+
+    '<button type="button" class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+
+    '</button></div>'+(home?"":'<div id="composer-performance"></div>')+'</div></div>';
+}
+
+function chatHome(mode,session,composer){
+  const agent=mode==="agent";
+  const missing=agent&&state.health&&!state.health.goose;
+  const setup=agent&&!state.health?.gooseRuntime?.portableAvailable;
+  return '<section class="home-stage" aria-labelledby="home-title"><div class="home-intro">'+
+    '<img src="/wiskharness.png" width="36" height="36" alt=""><h1 id="home-title">'+
+    (agent?"What should WiskHarness work on?":"What would you like to plan?")+'</h1></div>'+composer+
+    '<div class="home-shortcuts" role="group" aria-label="Prompt suggestions">'+homePrompts[mode].map(([label],index)=>
+      '<button class="btn btn-plain" type="button" data-home-prompt="'+index+'">'+label+'</button>').join("")+
+    (setup?'<button class="btn btn-plain" type="button" id="configure-goose">'+(missing?"Set up Goose":"Set up portable Goose")+'</button>':"")+
+    '</div>'+
+    (missing?'<p class="home-notice" role="status">'+esc(state.health.gooseRuntime?.error||"Agent Mode needs a Goose runtime.")+'</p>':"")+
+    (!selectedModel()&&state.health?'<p class="home-notice">Choose a model before sending. <button type="button" class="btn btn-plain btn-small" id="home-models">Manage models</button></p>':"")+
+    (agent&&session?'<details class="home-session-tools"><summary>Session tools</summary><div id="chat-inspector" class="inspector-inner"></div></details>':"")+
+    '</section>';
+}
+
 function renderChats(){
   renderTop();
-  const s=state.session,mode=currentMode(),plan=mode==="plan",running=runInView();
-  const model=modelIdentity(selectedModel()).label||"Choose model";
-  const placeholder=plan?"Ask a question or outline a plan…":"Describe the task…";
-  $("#content").innerHTML='<div class="chat-view '+mode+'"><div class="chat-main"><div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div><div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="2" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+(plan?"":'<button class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>')+'<button class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>'+chevron+'</button>'+(plan?"":'<button class="btn btn-small permission-trigger" id="permission-trigger" aria-haspopup="menu" aria-expanded="false"></button>')+'<span class="badge" id="save-status">'+(running?"Running":s?"Saved on PC":"Ready")+'</span><button class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+'</button></div><div id="composer-performance"></div></div></div></div>'+(plan?"":'<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>')+'</div>';
-  const body=$("#chat-body");
-  if(!s?.messages?.length){
-    const missingGoose=!plan&&state.health&&!state.health.goose;
-    body.innerHTML='<div class="chat-empty"><span class="chat-mode-mark">'+modeIcon(mode)+modeNames[mode]+' Mode</span><h1>'+
-      (plan?"What are you planning?":"What should the agent work on?")+'</h1><p>'+
-      (plan?"Ask a question, compare approaches, or work out a plan before editing files.":"Describe a coding task in your workspace. Review tool requests as the agent works.")+'</p>'+
-      (missingGoose?'<div class="runtime-notice"><p>'+esc(state.health.gooseRuntime?.error||"Agent Mode needs a compatible Goose executable.")+
-      '</p><button type="button" class="btn btn-small" id="configure-goose">Configure Goose</button></div>':'')+'</div>';
-    const configure=$("#configure-goose");
-    if(configure)configure.onclick=()=>changeView("settings");
-  }else{
+  const s=state.session,mode=currentMode(),plan=mode==="plan",running=runInView(),home=!s?.messages?.length;
+  const composer=chatComposer(mode,running,home);
+  const transcript='<div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div>';
+  const inspector='<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>';
+  $("#content").innerHTML='<div class="chat-view '+mode+(home?' chat-home':'')+'"><div class="chat-main">'+
+    (home?chatHome(mode,s,composer):transcript+composer)+'</div>'+(!home&&!plan?inspector:"")+'</div>';
+  if(!home){
+    const body=$("#chat-body");
     const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",error:"Error"};
     body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
     for(const m of s.messages)appendMessage(m);
@@ -311,7 +356,7 @@ function renderChats(){
   const mobile = matchMedia("(max-width: 960px)").matches;
   if(!plan&&s){
     let tools=$("#chat-inspector");
-    if(mobile){
+    if(mobile&&!home){
       tools=document.createElement("div");
       tools.className="compact-workbench";
       $(".composer-wrap").prepend(tools);
@@ -326,12 +371,35 @@ function renderChats(){
   picker.onclick=e=>showModelPicker(e.currentTarget);
   if($("#chat-attach"))$("#chat-attach").onclick=attachFile;
   const send=$("#chat-send");
-  send.disabled=(state.busy&&!running)||!selectedModel()&&!running;
   send.onclick=()=>running?cancelRun():runPrompt();
   const input=$("#chat-input");
   input.value=drafts.get(draftKey())||"";
+  const updateSend=()=>{send.disabled=!running&&(state.busy||!selectedModel()||!input.value.trim())};
+  updateSend();
   input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!send.disabled&&!runInView())runPrompt()}};
-  input.oninput=e=>{e.target.style.height="auto";e.target.style.height=Math.min(190,e.target.scrollHeight)+"px";drafts.set(draftKey(),e.target.value)};
+  input.oninput=e=>{e.target.style.height="auto";e.target.style.height=Math.min(190,e.target.scrollHeight)+"px";drafts.set(draftKey(),e.target.value);updateSend()};
+  if(input.value)input.dispatchEvent(new Event("input"));
+  if(home){
+    $("#home-mode-trigger").onclick=event=>showModePicker(event.currentTarget);
+    const configure=$("#configure-goose");
+    if(configure)configure.onclick=()=>{
+      changeView("settings");
+      const section=$("#content [data-goose-runtime]")?.closest(".card");
+      section?.scrollIntoView({block:"start"});
+      section?.focus({preventScroll:true});
+    };
+    const models=$("#home-models");
+    if(models)models.onclick=()=>changeView("models");
+    $$("[data-home-prompt]").forEach(button=>button.onclick=()=>{
+      const prompt=homePrompts[mode][Number(button.dataset.homePrompt)][1];
+      if(input.value.trim()&&input.value!==prompt)input.value=input.value.trimEnd()+"\n\n"+prompt;
+      else input.value=prompt;
+      input.value=input.value.slice(0,input.maxLength);
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+      input.setSelectionRange(input.value.length,input.value.length);
+    });
+  }
 }
 function updatePerformance(){
   const root=$("#composer-performance");
@@ -339,7 +407,7 @@ function updatePerformance(){
   const model=selectedModel(),identity=modelIdentity(model);
   mountPerformance(root,{
     model,identity,sessionId:state.session?.id,
-    metrics:state.performance,running:runInView()&&state.busy,
+    metrics:state.performance,running:runInView()&&state.busy,compact:!!root.closest(".chat-home"),
     connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()==="plan"||state.health?.goose):
       state.providerData?.providers.find(item=>item.name===identity.provider||item.id===identity.provider)?.connected,
     onOpen:()=>api("/api/models/diagnostics")
@@ -409,7 +477,7 @@ async function attachFile(){
       const text=await file.text(),addition="\n\nAttached "+file.name+":\n"+text+"\n",input=$("#chat-input");
       if(!input)return;
       if((input.value+addition).length>16000)throw new Error("Message exceeds the 16,000 character limit");
-      input.value+=addition;input.focus();toast("Text file attached","good");
+      input.value+=addition;input.dispatchEvent(new Event("input"));input.focus();toast("Text file attached","good");
     }catch(e){toast(e.message,"error")}finally{picker.remove()}
   };
   picker.oncancel=()=>picker.remove();
@@ -421,7 +489,11 @@ async function runPrompt(){
   const prompt=$("#chat-input")?.value.trim();if(!prompt)return;
   if(!state.session){
     state.starting=true;
-    try{if(!await newSession())return}
+    try{
+      if(!await newSession())return;
+      const input=$("#chat-input");
+      if(input&&!input.value){input.value=prompt;input.dispatchEvent(new Event("input"))}
+    }
     finally{state.starting=false}
   }
   const record=state.session,recordId=record.id;

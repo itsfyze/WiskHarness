@@ -11,6 +11,7 @@ import { setTimeout as wait } from "node:timers/promises";
 const [file,kind="installed",suite="qa",screenshot]=process.argv.slice(2);
 if(!file)throw Error("Pass an executable path, installed or portable, and qa, live or runtime");
 const runtimeQA=suite==="runtime";
+const homeQA=suite==="home";
 const exe=await realpath(resolve(file));
 const root=await mkdtemp(join(tmpdir(),"wisk-electron-"));
 const workspace=join(root,"workspace"),config=join(root,"config");
@@ -106,7 +107,7 @@ let app,browser,proc;
 async function start(){
   const args=["--user-data-dir="+join(root,"electron")];
   if(kind!=="portable"){
-    app=await _electron.launch({executablePath:exe,args,env,timeout:60000});
+    app=await _electron.launch({executablePath:exe,args:kind==="source"?[process.cwd(),...args]:args,env,timeout:60000});
     return app.firstWindow();
   }
   proc=spawn(exe,[...args,"--remote-debugging-port="+debugPort],{env,windowsHide:true,stdio:"ignore"});
@@ -215,6 +216,75 @@ async function checkWorkspaceViews(page) {
     console.log("PASS navigation, Git controls and settings section jumps at "+width+"x"+height);
   }
 }
+async function checkHome(page) {
+  const home=page.locator(".chat-home");
+  const input=page.locator("#chat-input");
+  await home.waitFor();
+  assert.equal(await page.locator(".composer").count(),1);
+  assert.equal(await page.locator("#chat-send").isDisabled(),true);
+  assert.equal(await page.locator("#model-trigger").isVisible(),false);
+  assert.equal(await page.getByRole("button",{name:"Work",exact:true}).count(),0);
+  for(const mode of ["Plan","Agent"]){
+    if(mode==="Agent"){
+      await page.locator("#home-mode-trigger").click();
+      await page.getByRole("menuitemradio",{name:/^Agent/}).click();
+      await page.getByRole("heading",{name:"What should WiskHarness work on?"}).waitFor();
+      await page.getByRole("switch",{name:"Internet access",checked:false}).waitFor();
+      await page.locator("#permission-trigger").getByText("Ask for approval").waitFor();
+      if(!(await api(page,"/api/health")).goose){
+        await page.locator(".home-notice").filter({hasText:"Goose"}).waitFor();
+        await page.getByRole("button",{name:"Set up Goose",exact:true}).waitFor();
+      }
+    }
+    for(const [width,height] of [[2560,1440],[1920,1080],[1440,900],[1280,720]]){
+      await page.setViewportSize({width,height});
+      const layout=await page.evaluate(()=>{
+        const box=selector=>{
+          const {left,top,width,height}=document.querySelector(selector).getBoundingClientRect();
+          return {left,top,width,height};
+        };
+        return {composer:box(".chat-home .composer"),pane:box(".chat-home .chat-main"),
+          heading:box("#home-title"),suggestions:box(".home-shortcuts"),documentWidth:document.documentElement.scrollWidth};
+      });
+      const center=box=>box.left+box.width/2;
+      assert(Math.abs(center(layout.composer)-center(layout.pane))<=1,JSON.stringify(layout));
+      assert(layout.heading.top+layout.heading.height<layout.composer.top);
+      assert(layout.composer.top+layout.composer.height<layout.suggestions.top);
+      assert(layout.composer.top>height*.30&&layout.composer.top<height*.64,JSON.stringify(layout));
+      assert.equal(layout.documentWidth,width);
+      if(screenshot)await page.screenshot({path:screenshot.replace(/\.png$/,"-home-"+mode.toLowerCase()+"-"+width+"x"+height+".png"),animations:"disabled"});
+    }
+    const text=mode==="Plan"?"Plan a feature":"Inspect project";
+    const original=(await api(page,"/api/sessions")).sessions.length;
+    await page.getByRole("button",{name:text,exact:true}).click();
+    assert.match(await input.inputValue(),mode==="Plan"?/plan a feature/i:/inspect the current project/i);
+    assert.equal(await page.locator("#chat-send").isEnabled(),true);
+    assert.equal(await input.evaluate(element=>document.activeElement===element),true);
+    assert.equal((await api(page,"/api/sessions")).sessions.length,original);
+    await input.fill("");
+    const picker=await measurePanels(page,"#composer-model");
+    await input.click();
+    await picker.waitFor({state:"detached"});
+    const performance=await measurePanels(page,".performance-trigger");
+    await page.keyboard.press("Escape");
+    await performance.waitFor({state:"detached"});
+  }
+  const setup=page.locator("#configure-goose");
+  if(await setup.isVisible()){
+    await setup.click();
+    await page.locator("#settings-goose-source").waitFor();
+    await page.locator("#navigation [data-view=chats]").click();
+    await home.waitFor();
+  }
+  await page.locator("#new-session").click();
+  await page.locator(".home-session-tools summary").click();
+  await page.getByRole("button",{name:"Terminal",exact:true}).waitFor();
+  await page.locator(".home-session-tools summary").click();
+  await page.locator("#home-mode-trigger").click();
+  await page.getByRole("menuitemradio",{name:/^Plan/}).click();
+  await page.getByRole("heading",{name:"What would you like to plan?"}).waitFor();
+  console.log("PASS centered Plan and Agent home at 2560×1440, 1920×1080, 1440×900 and 1280×720, with working draft, model, mode and Goose shortcuts");
+}
 async function checkPortableGoose(page, setup) {
   const runtime=setup.locator("[data-goose-runtime]");
   assert.equal((await api(page,"/api/goose-runtime")).systemAvailable,false);
@@ -306,10 +376,16 @@ try{
   assert.equal((await api(page,"/api/health")).version,currentVersion);
   if(runtimeQA){
     await checkPortableGoose(page,setup);
+  }else if(homeQA){
+    await setup.getByRole("button",{name:"Save setup"}).click();
+    await setup.waitFor({state:"detached"});
+    await checkHome(page);
+    assert.deepEqual(errors,[]);
   }else{
   await setup.getByRole("button",{name:"Save setup"}).click();
   await setup.waitFor({state:"detached"});
   await nativeChecks(page);
+  if(suite==="qa")await checkHome(page);
   await chat(page);
   if(suite==="qa"){
     await page.locator(".assistant-text h2").getByText("Rendered answer").waitFor();
@@ -401,14 +477,14 @@ try{
           return (values[0]+0.05)/(values[1]+0.05);
         });
         assert(contrast>=4.5,"Performance indicator contrast for "+theme+": "+contrast);
-        for(const selector of ["#mode-trigger","#model-trigger","#permission-trigger",".performance-trigger"]){
+        for(const selector of ["#mode-trigger","#composer-model","#permission-trigger",".performance-trigger"]){
           const panel=await measurePanels(page,selector);
           if(selector==="#permission-trigger"){
             const initial=await panel.locator(":focus").getAttribute("data-access");
             await page.keyboard.press("ArrowDown");
             assert.notEqual(await panel.locator(":focus").getAttribute("data-access"),initial);
           }
-          if(selector==="#model-trigger")await page.locator("#chat-input").click();
+          if(selector==="#composer-model")await page.locator("#chat-input").click();
           else await page.keyboard.press("Escape");
           await panel.waitFor({state:"detached"});
         }

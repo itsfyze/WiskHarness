@@ -17,6 +17,8 @@ To remove an installed copy, use Windows Installed apps or the matching releaseâ
 
 ## Local workflows
 
+New chats open on the centered WiskHarness home. Switch modes or models from the composer. Prompt suggestions fill an editable draft and the Goose shortcut opens runtime settings. WiskHarness restores your last selected chat at startup.
+
 - **Plan mode** streams text without tools or project memory writes. A Plan chat can be copied into a separate Agent chat. See [provider setup](docs/providers.md) for model selection and cloud consent.
 - **Agent mode** uses Goose ACP. Ask mode requests approval for restricted tools; Approve for me approves only eligible safe reads; opt-in Full access automatically approves Goose tool requests, including PowerShell/CMD shell commands, unless an explicit deny or inspectable protected-path policy blocks the request. Goose runs with the Windows user's privileges. No process or network sandbox exists; shell commands can affect files outside the selected workspace and protections cannot inspect their side effects. Plan mode always remains tool-free. The checklist records observed tool events and the latest checkpoint. Preparing a resume fills a new prompt for review.
 - **Terminal** runs confirmed PowerShell or CMD commands in the saved workspace. Output and exit status are recorded locally. Stop asks Windows to terminate the process tree.

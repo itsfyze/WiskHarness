@@ -30,8 +30,9 @@ function draw(state){
   const used=measured?current.contextUsed:sample?.source==="ollama"&&Number.isFinite(sample.totalTokens)?sample.totalTokens:null;
   const ratio=capacity&&used!==null?used/capacity:null;
   const speed=Number.isFinite(current?.tokensPerSecond)?display(current.tokensPerSecond," tokens/sec"):null;
-  button.textContent=[identity.label||"Choose a model",identity.provider,running?"Running":"Idle",speed,
-    ratio===null?null:(measured?"":"~")+display(ratio*100,"% context")].filter(Boolean).join(" · ");
+  button.textContent=data.compact?"Performance":
+    [identity.label||"Choose a model",identity.provider,running?"Running":"Idle",speed,
+      ratio===null?null:(measured?"":"~")+display(ratio*100,"% context")].filter(Boolean).join(" · ");
   button.title=button.textContent;
   if(!panel?.isConnected)return;
   const inference=rows("Inference",[

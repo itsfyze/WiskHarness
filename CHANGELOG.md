@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3-beta.3
+
+- Centered the new-chat home around one composer with mode, model and performance controls. Agent home also shows attachments, permissions and Internet access.
+- Added mode-specific prompt shortcuts that fill an editable draft, plus a direct path to Goose setup when portable Goose is missing.
+- Kept saved-chat restoration and the existing conversation layout. New-chat drafts stay visible while choosing whether to send to a cloud provider.
+
 ## 0.7.3-beta.2
 
 - Added optional Internet access in the Agent composer and Settings. The preference defaults off, persists, and takes effect on the next Agent turn.
