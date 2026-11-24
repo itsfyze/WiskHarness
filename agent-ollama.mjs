@@ -60,12 +60,12 @@ export async function ollamaRound({endpoint, model, messages, tools, format, con
       if (calls.size > 24 || current.args.length > 96_000) throw new Error("Ollama tool response exceeded its limit");
     }
     if (event.done !== true) continue;
-    if (event.done_reason === "length") throw new Error("Ollama reached its output limit before completing the response");
+
     const stats = Object.fromEntries(["eval_count","eval_duration","prompt_eval_count","prompt_eval_duration","total_duration","load_duration"]
       .filter(key=>Number.isFinite(event[key]) && event[key]>=0).map(key=>[key,event[key]]));
     if (stats.eval_duration > 0 && Number.isFinite(stats.eval_count)) stats.tokensPerSecond = stats.eval_count * 1e9 / stats.eval_duration;
     onMetrics(stats);
-    return {content:cleanAgentText(content), structured:format?content:undefined, thinking, calls:[...calls.values()].map(({name,args,object}) => {
+    return {stop:event.done_reason||"unspecified",promptTokens:stats.prompt_eval_count,outputTokens:stats.eval_count,content:cleanAgentText(content), structured:format?content:undefined, thinking, calls:[...calls.values()].map(({name,args,object}) => {
       let input = object ?? {}, invalid = false;
       if (args) try { input = JSON.parse(args); } catch { invalid = true; }
       return {name, input, invalid};
@@ -82,7 +82,7 @@ const completion = {
   }
 };
 
-export async function runOllamaAgent({endpoint, model, capabilities, contextTokens, budget, history, prompt, instructions, tools, signal, onMetrics, onText, onStatus, execute}) {
+export async function runOllamaAgent({endpoint, model, capabilities, contextTokens, budget, history, prompt, instructions, tools, signal, onMetrics, onText, onStatus, execute, checkpoint, onCheckpoint=()=>{}}) {
   const context = Math.min(contextTokens || capabilities.modelContext || 32768, capabilities.trainedContext || Infinity);
   const allowance = Math.max(3500,(context - Math.min(8192, Math.floor(context/3))) * 2);
   const base = [
@@ -114,10 +114,24 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
   }};
   const compatibilityInstructions = instructions + "\n\nUse structured JSON mode. Return one JSON object containing the name of a registered tool and its arguments object. Read each tool result before selecting the next operation. Use finish_task to end. Available tools:\n"+
     catalog.map(({function: tool})=>tool.name+": "+tool.description+" "+JSON.stringify(tool.parameters)).join("\n");
-  let compatible = !capabilities.tools;
+  let compatible = !capabilities.tools || checkpoint?.protocol==="json";
   if (compatible) onStatus("Using Ollama structured JSON compatibility mode for this model.");
   const seen = new Map();
-  let callCount=0, successCount=0, noCalls=0, lastActionFailed=false, needsVerification=false;
+  const requirements=[
+    ["source","Implement source files",/\b(?:implement|source code|source files|programming project|functional GUI)\b/i],
+    ["build","Compile or build the project",/\b(?:compil\w*|py_compile)\b/i],
+    ["test","Run automated tests",/\b(?:automated tests|unit tests|unittest|pytest|run tests)\b/i],
+    ["package","Produce the requested package",/\b(?:packag(?:e|es|ing)|distribution artifact|zip archive)\b/i]
+  ];
+  const checklist=requirements.filter(([, ,pattern])=>pattern.test(prompt)).map(([id,label])=>({
+    id,label,evidence:checkpoint?.checklist?.find(item=>item.id===id)?.evidence||null
+  }));
+  const outstanding=()=>checklist.filter(item=>!item.evidence);
+  let lastProgress=checkpoint?.lastProgress||null, retryProgress=-1, correction="";
+  const publish=(round,calls,stop,tokens)=>onCheckpoint({checklist,lastProgress,rounds:round,calls,
+    protocol:compatible?"json":"native",providerStop:stop,context,tokens});
+  publish(0,0,null);
+  let callCount=0, successCount=0, noCalls=0, lastActionFailed=false, needsVerification=false, permissionBlocked=false;
   const finishIncomplete = (message,reason) => {onText(message);return reason;};
   for (let round=0; round<budget.rounds; round++) {
     signal.throwIfAborted();
@@ -130,9 +144,15 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
       used=next;
     }
     const retry = noCalls?"\nThe previous response did not contain a valid tool action. Continue the current objective with a registered call or finish_task. Printed commands never execute.":"";
-    const system={role:"system",content:(compatible?compatibilityInstructions:base[0].content)+retry};
+    const pending=outstanding().map(item=>item.label).join("; ");
+    const system={role:"system",content:(compatible?compatibilityInstructions:base[0].content)+retry+
+      (pending?"\nOutstanding objectives: "+pending+". Continue with real tools while actionable work remains.": "")+
+      (lastProgress?"\nLast observed progress: "+lastProgress:"")+
+      (checkpoint?"\nThis task resumed from a saved checkpoint. Inspect the current workspace and reverify outputs before completing.":"")+correction};
     const step = await ollamaRound({endpoint,model,context,...(compatible?{format}:{tools:catalog}),signal,onMetrics,
       messages:[system,...clipHistory,base[1],...included]});
+    publish(round+1,callCount,step.stop,{input:step.promptTokens,output:step.outputTokens});
+    if(step.stop==="length")return finishIncomplete("Ollama reached its output token limit. Continue with smaller tool inputs.","model_output_limit");
     if (compatible) {
       step.calls=[];
       try {
@@ -145,14 +165,14 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
     }
     if (!step.calls.length) {
       noCalls++;
-      if (!compatible && capabilities.completion && callCount===0 && noCalls>=2) {
+      if (!compatible && capabilities.completion && noCalls>=2) {
         compatible=true;
         noCalls=0;
         onStatus("The model returned prose instead of native tool calls. Trying structured JSON compatibility mode.");
         continue;
       }
       if (noCalls>=3) {
-        return finishIncomplete("The model ended without a structured completion. Review the tool results above and continue the task with a tool-capable model if needed.","incomplete");
+        return finishIncomplete("The model ended without a structured completion. Review the tool results above and continue the task with a tool-capable model if needed.","no_structured_action");
       }
       continue;
     }
@@ -170,24 +190,45 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
         const valid = !invalid && step.calls.length===1 && ["completed","incomplete","answered"].includes(status) && summary &&
           summary.length<=12000 && Object.keys(input).length===2;
         if (!valid) result={ok:false,error:"Call finish_task by itself with a valid status and summary."};
-        else if (status==="completed" && (successCount===0 || lastActionFailed || needsVerification)) result={ok:false,error:"Completion needs successful tool evidence. Read back changed files or run checks after the last mutation. Report outstanding failures as incomplete."};
-        else if (status==="answered" && (callCount>0 || needsExecution)) result={ok:false,error:"This task requires execution. Use tools and verify the work, or report incomplete."};
-        else {onText(summary);return status==="incomplete"?"incomplete":"end_turn";}
+        else if (status==="completed" && (successCount===0 || lastActionFailed || needsVerification || outstanding().length)) result={ok:false,error:"Completion needs successful tool evidence. Read back changed files or run checks after the last mutation. Report outstanding failures as incomplete."};
+        else if (status==="answered" && (callCount>0 || needsExecution || checklist.length)) result={ok:false,error:"This task requires execution. Use tools and verify the work, or report incomplete."};
+        else if(status==="incomplete" && !permissionBlocked && successCount>0 && retryProgress!==successCount){
+          retryProgress=successCount;
+          correction="\nThe previous summary was intermediate progress. Execute the next implementation or verification tool. State a concrete blocker only if no authorized action can proceed.";
+          result={ok:false,error:"Work remains. Continue with the next concrete tool action."};
+        }
+        else {onText(summary);return status==="incomplete"?"model_reported_incomplete":"end_turn";}
       } else {
-        if (callCount++>=budget.calls) {
+        if (callCount>=budget.calls) {
           return finishIncomplete("Tool call limit reached. Review the saved actions and continue from the current workspace state.","max_tool_calls");
         }
+        callCount++;
         const signature=JSON.stringify([name,Object.entries(input ?? {}).sort(([a],[b])=>a.localeCompare(b))]);
         const attempts=seen.get(signature) || 0;
         seen.set(signature,attempts+1);
         result=invalid?{ok:false,error:"Invalid JSON arguments. Send a valid argument object."}:
           attempts>=2?{ok:false,error:"Repeated identical request blocked. Use the prior result or change the input."}:await execute(name,input);
         lastActionFailed=!result.ok;
+        permissionBlocked=!result.ok&&/permission denied|permission policy/i.test(String(result.error));
+        if (!result.ok && name==="write_file" && /EEXIST/.test(String(result.error))) {
+          result.error += " Read the existing file and use edit_file with exact before and after text.";
+        }
         if (result.ok) {
           successCount++;
+          correction="";
+          const command=String(input.command||"");
+          const matches={
+            source:["write_file","edit_file"].includes(name)&&/\.(?:py|js|ts|jsx|tsx|java|cs|rs|go|c|cpp|html|css|ps1)$/i.test(String(input.path)),
+            build:name==="run_command"&&/py_compile|\bcompile\b|\bbuild\b|\bjavac\b|\bcsc\b/i.test(command),
+            test:name==="run_command"&&/unittest|pytest|\btest\b|ctest/i.test(command),
+            package:name==="run_command"&&/compress-archive|zipfile|\bpackage\b|\bpack\b|pyinstaller|electron-builder/i.test(command)
+          };
+          lastProgress=(name+" "+String(input.path||command)).slice(0,420);
+          for(const item of checklist)if(matches[item.id])item.evidence=lastProgress;
           if (["write_file","edit_file","create_directory"].includes(name)) needsVerification=true;
           if (["read_file","run_command"].includes(name)) needsVerification=false;
         }
+        publish(round+1,callCount,step.stop,{input:step.promptTokens,output:step.outputTokens});
       }
       messages.push({role:"tool",tool_name:name,content:JSON.stringify(result)});
     }

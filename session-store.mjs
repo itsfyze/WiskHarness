@@ -78,6 +78,7 @@ export class SessionStore {
           if(last?.role==="assistant"&&last.status==="streaming")last.status="interrupted";
           if(item.task){
             item.task.status="interrupted";
+            item.task.stopReason="backend_restarted";
             item.task.verification="Interrupted. Inspect persisted results before continuing.";
           }
           dirty=true;

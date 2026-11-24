@@ -987,13 +987,18 @@ function reportNative(record,reply,name,kind,input){
 
 async function run(req,res){
   if(busy||terminal||gitMutating||unloadPending||updater.status().download?.state==="running")return fail(res,new Error("Finish the active task, terminal, Git change, model unload or download first"),409);
-  const prompt=String(req.body?.prompt||"").trim();
-  if(!prompt||prompt.length>16000)return fail(res,new Error("Enter a prompt under 16,000 characters"),400);
+  let prompt=String(req.body?.prompt||"").trim();
   let record;
   try{
     record=store.get(req.params.id);
     if(!record)return fail(res,new Error("Session not found"),404);
   }catch(e){return fail(res,e,400)}
+  const resume=req.body?.resume===true;
+  if(resume&&(record.mode!=="agent"||!["incomplete","interrupted","cancelled","error"].includes(record.status)||!record.task?.description))
+    return fail(res,new Error("No resumable task in this chat"),409);
+  const checkpoint=resume?record.task.checkpoint:null;
+  if(resume)prompt=record.task.description;
+  if(!prompt||prompt.length>16000)return fail(res,new Error("Enter a prompt under 16,000 characters"),400);
   if(!record.model)return fail(res,new Error("Select a model before sending a message"),400);
   const providerSelection=parseModelRef(record.model);
   if(providerSelection&&(record.mode!=="plan"||!settings.providers[providerSelection.id]?.enabled||
@@ -1009,7 +1014,7 @@ async function run(req,res){
   const reply={id:randomUUID(),role:"assistant",text:"",createdAt:new Date().toISOString(),status:"streaming",tools:[]};
   if(record.title==="New chat")record.title=user.text.replace(/\s+/g," ").slice(0,75);
   record.messages.push(user,reply);record.status="running";
-  if(record.mode==="agent")record.task={description:user.text,status:"running",engine:settings.agentEngine,actions:[],plan:[],checkpointAt:new Date().toISOString(),verification:"Pending"};
+  if(record.mode==="agent")record.task={description:user.text,status:"running",engine:settings.agentEngine,actions:[],plan:[],checkpoint,checkpointAt:new Date().toISOString(),verification:"Pending"};
   try{store.save(record)}catch(e){return fail(res,e)}
   busy=true;
   res.writeHead(200,{"content-type":"text/event-stream; charset=utf-8","cache-control":"no-store","connection":"keep-alive","x-accel-buffering":"no"});
@@ -1065,7 +1070,8 @@ async function run(req,res){
           protectedPath:protectedAgentPath,authorize:(name,kind,input)=>authorizeNative(record,controller.signal,name,kind,input),
           report:(name,kind,input)=>reportNative(record,reply,name,kind,input)});
         stopReason=await runOllamaAgent({endpoint:OLLAMA,model:record.model,capabilities:info,contextTokens:settings.contextTokens,
-          budget:settings.agentBudget,history:record.messages.slice(0,-2),prompt,
+          budget:settings.agentBudget,history:record.messages.slice(0,-2),prompt,checkpoint,
+          onCheckpoint:data=>{record.task.checkpoint=JSON.parse(JSON.stringify(data,(_k,v)=>typeof v==="string"?protect(v):v));emit("task",{task:record.task});queueFlush()},
           instructions:agentInstructions(record.workspace,memoryContext),...toolSet,signal:controller.signal,onMetrics:recordUsage,onStatus:update=>{record.task.engineNotice=update;emit("status",{update});queueFlush()},
           onText: text=>{reply.text+=text;measureText(text);emit("text",{text});queueFlush()}});
         reply.status=stopReason==="end_turn"?"completed":"incomplete";
@@ -1115,6 +1121,7 @@ async function run(req,res){
     reply.text=protect(reply.text);
     if(record.mode==="agent"){
       record.task.status=record.status;
+      record.task.stopReason=stopReason||reply.error||record.status;
       record.task.checkpointAt=new Date().toISOString();
       record.task.verification="Tool statuses are observed; project correctness needs independent verification.";
       if(before)try{

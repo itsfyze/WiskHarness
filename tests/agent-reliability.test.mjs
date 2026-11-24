@@ -67,8 +67,9 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
             res.write(JSON.stringify({message:{thinking:"HIDDEN_REASONING_CANARY",tool_calls:[tool("write_",'{\"path\":\"marker.txt\",')]} })+"\n");
             message={tool_calls:[tool("file",'\"content\":\"The harness created this.\"}')],content:"<turn-context>INTERNAL_CANARY</turn-context>"};
           }
-          if(count===3){assert.equal(toolResults.at(-1).ok,true);message={tool_calls:[tool("read_file",{path:"marker.txt"})]};}
-          if(count===4){
+          if(count===3){assert.equal(toolResults.at(-1).ok,true);message={tool_calls:[finalText("incomplete","Wrote the file; readback is next.")]};}
+          if(count===4){assert.match(toolResults.at(-1).error,/Continue/);message={tool_calls:[tool("read_file",{path:"marker.txt"})]};}
+          if(count===5){
             assert.equal(toolResults.at(-1).text,"The harness created this.");
             message={tool_calls:[finish("Verified marker.txt.<turn-context>INTERNAL_CANARY</turn-context>")]};
           }
@@ -88,7 +89,8 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
         case "cancel":
           message={tool_calls:[tool("run_command",{shell:"powershell",command:"Start-Sleep 60"})]};break;
         case "budget":
-          message={tool_calls:[tool("list_directory",{path:"."})]};break;
+          if(count===3)assert.match(input.messages[0].content,/resumed from a saved checkpoint/);
+          message={tool_calls:[count===4?finish("Workspace inspected after continuing."):tool("list_directory",{path:"."})]};break;
         case "compat":
           assert(input.format?.properties.name.enum.includes("write_file"));
           assert.equal(input.tools,undefined);
@@ -129,9 +131,9 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   for(let i=0;i<100;i++){
     try{await api("/api/setup");break}catch(error){if(i===99)throw Error(stderr,{cause:error});await delay(70);}
   }
-  async function run(prompt,{choose=model,permission}={}) {
-    const {session}=await (await api("/api/sessions",{workspace,model:choose},201)).json();
-    const response=await api("/api/sessions/"+session.id+"/run",{prompt});
+  async function run(prompt,{choose=model,permission,resumeId}={}) {
+    const {session}=resumeId?{session:{id:resumeId}}:await (await api("/api/sessions",{workspace,model:choose},201)).json();
+    const response=await api("/api/sessions/"+session.id+"/run",resumeId?{resume:true}:{prompt});
     const decoder=new TextDecoder();
     const events=[];
     let buffer="";
@@ -165,7 +167,7 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   assert.equal((await run("Diagnose failed tool requests [case:recover]",{permission:approve})).done.stopReason,"end_turn");
   assert.equal(approvals,2);
   const deny=async event=>{approvals++;await api("/api/agent/permission",{requestId:event.requestId,optionId:"reject"});};
-  assert.equal((await run("Write outside and run a declined command [case:denied]",{permission:deny})).done.stopReason,"incomplete");
+  assert.equal((await run("Write outside and run a declined command [case:denied]",{permission:deny})).done.stopReason,"model_reported_incomplete");
   assert.equal(approvals,3);
   for(const file of [outside,path.join(workspace,"denied-marker.txt")])await assert.rejects(fs.stat(file),{code:"ENOENT"});
   const cancel=async(_event,id)=>{await api("/api/agent/cancel",{sessionId:id});};
@@ -175,7 +177,13 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   assert.equal((await run("Create a file [case:unsupported]",{choose:unsupported})).done.stopReason,"tools_unsupported");
   assert.equal(hits.has("unsupported"),false);
   await api("/api/agent/execution",{budget:{rounds:3,calls:1,minutes:2}});
-  assert.equal((await run("Inspect the folder [case:budget]")).done.stopReason,"max_tool_calls");
+  const limited=await run("Inspect the folder [case:budget]");
+  assert.equal(limited.done.stopReason,"max_tool_calls");
+  assert.equal(limited.saved.task.stopReason,"max_tool_calls");
+  assert.match(limited.saved.task.checkpoint.lastProgress,/list_directory/);
+  const resumed=await run("Inspect the folder [case:budget]",{resumeId:limited.saved.id});
+  assert.equal(resumed.done.stopReason,"end_turn");
+  assert.equal(resumed.saved.messages.length,4);
   const newFolder=path.join(root,"New Project With Spaces");
   await api("/api/projects",{path:newFolder,create:true},201);
   assert((await fs.stat(newFolder)).isDirectory());

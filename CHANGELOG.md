@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3-beta.5
+
+- Continue after premature progress summaries and require tool evidence for implementation, compilation, tests, and packaging when requested.
+- Save the execution checklist and stop reason. Continue an incomplete task from its chat and workspace.
+
 ## 0.7.3-beta.4
 
 - Made native Ollama tool calling the default Agent engine. Models that return prose on the native path can use structured JSON compatibility.

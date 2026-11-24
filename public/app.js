@@ -341,6 +341,22 @@ function renderChats(){
     const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",incomplete:"Incomplete",error:"Error"};
     body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
     for(const m of s.messages)appendMessage(m);
+    if(!plan&&!running&&s.task){
+      const details=document.createElement("section");
+      if(s.task.stopReason){const reason=document.createElement("p");reason.textContent="Stop reason: "+s.task.stopReason.replaceAll("_"," ");details.append(reason)}
+      const progress=s.task.checkpoint;
+      if(progress){const line=document.createElement("p");line.textContent=`${progress.rounds} model rounds · ${progress.calls} tool calls`+(progress.providerStop?` · Ollama stop: ${progress.providerStop}`:"");details.append(line)}
+      const goals=document.createElement("ul");
+      for(const item of s.task.checkpoint?.checklist||[]){
+        const entry=document.createElement("li");entry.textContent=item.label+" · "+(item.evidence?"Observed: "+item.evidence:"Outstanding");goals.append(entry);
+      }
+      if(goals.children.length)details.append(goals);
+      if(["incomplete","cancelled","interrupted","error"].includes(s.status)){
+        const button=document.createElement("button");button.type="button";button.className="btn btn-small";button.textContent="Continue task";button.disabled=state.busy;
+        button.onclick=()=>runPrompt(true);details.append(button);
+      }
+      if(details.children.length)body.append(details);
+    }
     if(plan&&!running){
       const action=document.createElement("button");action.className="btn btn-small";
       action.textContent="Continue in Agent Mode";action.onclick=()=>handoff(s.id);body.append(action);
@@ -502,10 +518,10 @@ async function attachFile(){
   picker.oncancel=()=>picker.remove();
   picker.click();
 }
-async function runPrompt(){
+async function runPrompt(resume=false){
   if(state.activeRun||state.starting)return;
   if(state.busy)return toast("The agent is already running another task","error");
-  const prompt=$("#chat-input")?.value.trim();if(!prompt)return;
+  const prompt=resume?"Continue task":$("#chat-input")?.value.trim();if(!prompt)return;
   if(!state.session){
     state.starting=true;
     try{
@@ -573,7 +589,7 @@ async function runPrompt(){
     if(marker)marker.textContent=reply.status==="error"?reply.error:completed?(reply.status==="incomplete"?"Incomplete":"Saved"):"Working…";
   }
   try{
-    const response=await fetch("/api/sessions/"+sid(recordId)+"/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt,cloudConsent:model.cloud?record.model:undefined})});
+    const response=await fetch("/api/sessions/"+sid(recordId)+"/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt,resume,cloudConsent:model.cloud?record.model:undefined})});
     if(!response.ok){let err={};try{err=await response.json()}catch{}throw new Error(err.error||"HTTP "+response.status)}
     const reader=response.body.getReader(),decoder=new TextDecoder();
     while(true){
