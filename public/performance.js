@@ -29,16 +29,18 @@ function draw(state){
   const measured=Number.isFinite(current?.contextUsed);
   const used=measured?current.contextUsed:sample?.source==="ollama"&&Number.isFinite(sample.totalTokens)?sample.totalTokens:null;
   const ratio=capacity&&used!==null?used/capacity:null;
-  const speed=Number.isFinite(current?.tokensPerSecond)?display(current.tokensPerSecond," tokens/sec"):null;
-  button.textContent=data.compact?"Performance":
-    [identity.label||"Choose a model",identity.provider,running?"Running":"Idle",speed,
-      ratio===null?null:(measured?"":"~")+display(ratio*100,"% context")].filter(Boolean).join(" · ");
+  const measuredSpeed=Number.isFinite(current?.tokensPerSecond)?display(current.tokensPerSecond," t/s"):null;
+  const liveSpeed=Number.isFinite(current?.liveTokensPerSecond)?(current.liveEstimated?"≈ ":"")+display(current.liveTokensPerSecond," t/s"):null;
+  const speed=running?(liveSpeed||"Live speed unavailable"):(measuredSpeed?"Last "+measuredSpeed:"Speed unavailable");
+  const status=!running?"Idle":current?.status==="generating"?"Generating":current?.status==="tool"?"Running tool":"Working";
+  button.textContent=[identity.label||"Choose a model",identity.provider,data.runtime,status,speed,
+    ratio===null?null:"Context "+(measured?"":"≈ ")+display(ratio*100,"%")].filter(Boolean).join(" · ");
   button.title=button.textContent;
   if(!panel?.isConnected)return;
   const inference=rows("Inference",[
     ["Model",identity.label||"Unavailable"],["Provider",identity.provider],
     ["Connection",connected===true?"Available":connected===false?"Unavailable":"Unverified"],
-    ["Generation speed",speed||"Unavailable"],["Prompt tokens",display(current?.prompt_eval_count)],
+    ["Live generation speed",running?liveSpeed||"Unavailable":"Idle"],["Last measured generation speed",measuredSpeed||"Unavailable"],["Prompt tokens",display(current?.prompt_eval_count)],
     ["Generated tokens",display(current?.eval_count)],["Measured turn tokens",display(current?.totalTokens)],
     ["ACP session tokens",display(current?.acpSessionTokens)],["Time to first text",ms(current?.firstTextMs)],
     ["Response duration",current?.status==="running"?"Running":ms(current?.elapsedMs)],

@@ -24,23 +24,30 @@ export function snapshotWorkspace(workspace, {redact} = {}) {
       const absolute = path.join(folder, entry.name);
       if (redact && sensitivePath(absolute)) { skipped++; continue; }
       if (entry.isDirectory()) folders.push(absolute);
-      if (!entry.isFile() || !sourceExtension.test(entry.name)) continue;
+      if (!entry.isFile()) continue;
       try {
         const stat = fs.lstatSync(absolute);
-        if (!stat.isFile() || stat.size > limit || stat.nlink !== 1) { skipped++; continue; }
-        const raw = fs.readFileSync(absolute);
-        const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
-        if (raw.length > limit || text.includes("\0")) { skipped++; continue; }
-        if (redact && redact(text) !== text) { skipped++; continue; }
-        bytes += raw.length;
-        files.set(path.relative(root, absolute), { text, hash: hash(text) });
+        if (!stat.isFile() || stat.nlink !== 1) { skipped++; continue; }
+        const name=path.relative(root,absolute);
+        if(stat.size>limit){
+          files.set(name,{text:null,hash:"stat:"+stat.size+":"+stat.mtimeMs+":"+stat.ino,size:stat.size,large:true});
+          continue;
+        }
+        const raw=fs.readFileSync(absolute);
+        bytes+=raw.length;
+        let text=null;
+        if(sourceExtension.test(entry.name)&&!raw.includes(0)){
+          try{text=new TextDecoder("utf-8",{fatal:true,ignoreBOM:true}).decode(raw)}catch{}
+        }
+        if(redact&&text!==null&&redact(text)!==text){skipped++;continue}
+        files.set(name,{text,hash:hash(raw),size:raw.length,...(text===null?{binary:true}:{})});
       } catch { skipped++; }
     }
   }
   return { root, files, limited: skipped > 0 || folders.length > 0 };
 }
 
-export function compareWorkspace(before, after) {
+export function compareWorkspace(before, after, {previous, observed, owned} = {}) {
   const changes = [];
   for (const name of new Set([...before.files.keys(), ...after.files.keys()])) {
     const a = before.files.get(name), b = after.files.get(name);
@@ -53,14 +60,27 @@ export function compareWorkspace(before, after) {
       if (!exists && b) continue;
       if (exists && !b) continue;
     }
-    changes.push({ id: randomUUID(), name, before: a ?? null, after: b ?? null,
-      kind: !a ? "added" : !b ? "removed" : "modified", disposition: "applied" });
+    const old = previous?.changes.find(item => item.name === name && item.before?.hash === a?.hash && item.after?.hash === b?.hash);
+    const attributable = observed?.has(name);
+    const binary=!!(a?.binary||b?.binary), large=!!(a?.large||b?.large);
+    changes.push({ id: old?.id || randomUUID(), name, before: a ?? null, after: b ?? null,
+      kind: !a ? "added" : !b ? "removed" : "modified", disposition: old?.disposition || "applied",binary,large,
+      ...(observed ? {origin: attributable ? "agent" : "workspace", reversible: !binary&&!large&&owned?.has(name) && owned.get(name) === b?.hash} : {}) });
   }
-  return { changes, limited: before.limited || after.limited, root: before.root };
+  const renamed=[];
+  for(const removed of changes.filter(item=>item.kind==="removed"&&!item.large)){
+    const candidates=changes.filter(item=>item.kind==="added"&&!item.large&&item.after.hash===removed.before.hash);
+    if(candidates.length!==1||changes.filter(item=>item.kind==="removed"&&item.before.hash===removed.before.hash).length!==1)continue;
+    const added=candidates[0];
+    added.kind="renamed";added.oldName=removed.name;added.before=removed.before;added.reversible=false;
+    renamed.push(removed.id);
+  }
+  return { changes:changes.filter(item=>!renamed.includes(item.id)), limited: before.limited || after.limited, root: before.root };
 }
 
 export function revertChange(workspace, review, change) {
-  if (change.kind !== "modified" || change.disposition !== "applied" || !change.before || !change.after) throw new Error("This change cannot be reverted");
+  if (change.binary || change.large || change.reversible === false || !["added","modified"].includes(change.kind) || change.disposition !== "applied" ||
+    !change.after || (change.kind === "modified" && !change.before)) throw new Error("This change cannot be reverted");
   const root = fs.realpathSync(workspace);
   const candidate = path.resolve(root, change.name);
   const relative = path.relative(root, candidate);
@@ -72,6 +92,11 @@ export function revertChange(workspace, review, change) {
     return stat;
   }
   const stat = inspect();
+  if(change.kind === "added"){
+    fs.unlinkSync(candidate);
+    change.disposition = "reverted";
+    return;
+  }
   const temp = path.join(path.dirname(candidate), ".wisk-" + randomUUID());
   try {
     fs.writeFileSync(temp, change.before.text, { flag: "wx", mode: stat.mode });

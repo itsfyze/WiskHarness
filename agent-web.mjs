@@ -37,9 +37,10 @@ export function publicUrl(value) {
 
 export function searchEndpoint(value) {
   if (value === "") return "";
+  if(typeof value==="string"&&/^http:\/\/127\.0\.0\.1:\d{1,5}\/search$/.test(value))return new URL(value).href;
   const url = publicUrl(value);
   if (url.protocol !== "https:" || url.search || value.includes("#")) {
-    throw new Error("Use a public HTTPS SearXNG search URL without a query or fragment.");
+    throw new Error("Use a public HTTPS SearXNG URL or 127.0.0.1 with an explicit port and /search.");
   }
   return url.href;
 }
@@ -141,7 +142,7 @@ const cleanText=(html,limit)=>convert(html,{
   ]
 }).trim().slice(0,limit);
 
-export function createAgentWeb({read=createPublicReader(),endpoint=""}={}) {
+export function createAgentWeb({read=createPublicReader(),endpoint="",braveKey,fetcher=fetch}={}) {
   async function openPage(url,signal) {
     const page=await read(url,{signal});
     const text=page.type.includes("html")?cleanText(page.text,16000):page.text.trim().slice(0,16000);
@@ -153,13 +154,16 @@ export function createAgentWeb({read=createPublicReader(),endpoint=""}={}) {
     if(redactSecrets(query)!==query || /\b[A-Za-z]:[\\/]/.test(query)){
       throw new Error("Use public search terms without credentials or local file paths.");
     }
-    const provider=source==="auto"?(endpoint?"web":"technical"):source;
-    if(provider==="web"&&!endpoint) throw new Error("Configure a public SearXNG endpoint in Settings for broad web search. GitHub and Wikipedia search are available without setup.");
+    const provider=source==="auto"?(endpoint||braveKey?"web":"technical"):source;
+    if(provider==="web"&&braveKey)return searchBrave(query.trim(),braveKey,fetcher,signal);
+    if(provider==="web"&&!endpoint) throw new Error("Configure a public SearXNG endpoint or Brave Search in Settings for broad web search. GitHub and Wikipedia search are available without setup.");
     const url=new URL(provider==="web"?endpoint:provider==="technical"?
       "https://api.github.com/search/issues":"https://en.wikipedia.org/w/rest.php/v1/search/page");
     url.searchParams.set("q",query.trim());
     url.searchParams.set(provider==="technical"?"per_page":provider==="web"?"format":"limit",provider==="web"?"json":"6");
-    const response=await read(url.href,{json:true,signal});
+    const response=provider==="web"&&url.hostname==="127.0.0.1"?{
+      text:await fetchSearchJson(fetcher,url,{},signal,"Local SearXNG")
+    }:await read(url.href,{json:true,signal});
     let data;
     try {data=JSON.parse(response.text)}
     catch {throw new Error("The search service returned invalid JSON.");}
@@ -178,4 +182,32 @@ export function createAgentWeb({read=createPublicReader(),endpoint=""}={}) {
     return rendered.length?rendered.join("\n\n"):"No public results for this search.";
   }
   return {openPage,searchWeb};
+}
+
+async function searchBrave(query, getKey, fetcher, signal) {
+  const url=new URL("https://api.search.brave.com/res/v1/web/search");
+  url.searchParams.set("q",query);url.searchParams.set("count","6");
+  const text=await fetchSearchJson(fetcher,url,{"x-subscription-token":await getKey()},signal,"Brave Search");
+  const hits=JSON.parse(text).web?.results;
+  if(!Array.isArray(hits))return "No public results for this search.";
+  return hits.slice(0,6).flatMap(item=>{
+    try{return [String(item.title||"Result").slice(0,160)+"\n"+publicUrl(item.url).href+"\n"+
+      cleanText(String(item.description||"").slice(0,5000),250)+(item.age?" · "+String(item.age).slice(0,40):"")];}
+    catch{return [];}
+  }).join("\n\n")||"No public results for this search.";
+}
+
+async function fetchSearchJson(fetcher,url,headers,signal,label){
+  const timeout=AbortSignal.timeout(12000);
+  const response=await fetcher(url,{headers:{accept:"application/json",...headers},
+    redirect:"error",signal:signal?AbortSignal.any([signal,timeout]):timeout});
+  if(!response.ok||!response.body)throw new Error(label+" HTTP "+response.status);
+  let text="",bytes=0;
+  const decoder=new TextDecoder();
+  for await(const chunk of response.body){
+    bytes+=chunk.byteLength;
+    if(bytes>MAX_BYTES)throw new Error(label+" response exceeds 1 MiB");
+    text+=decoder.decode(chunk,{stream:true});
+  }
+  return text+decoder.decode();
 }

@@ -25,46 +25,13 @@ if ($tagCommit -ne $commit) { throw "Remote $Tag does not point to the checked-o
 git merge-base --is-ancestor $commit refs/remotes/origin/main
 if ($LASTEXITCODE -ne 0) { throw 'The tag commit must be present on origin/main.' }
 
-$directory = (Resolve-Path -LiteralPath $AssetDirectory).Path
-$names = @("WiskHarness Portable $version.exe", "WiskHarness Setup $version.exe", 'SHA256SUMS.txt', 'update-manifest.json')
-$files = @{}
-$hashes = @{}
-$manifestLines = @()
-$updateFiles = @()
-foreach ($name in $names[0..1]) {
-    $file = Get-Item -LiteralPath (Join-Path $directory $name)
-    if ($file.VersionInfo.ProductVersion -ne $version) { throw "Unexpected executable version in $name." }
-    $files[$name] = $file
-    $hashes[$name] = (Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
-    $manifestLines += "$($hashes[$name])  $name"
-    $updateFiles += [ordered]@{
-        kind = if ($name.Contains(' Portable ')) { 'portable' } else { 'setup' }
-        name = $name.Replace(' ', '.')
-        size = $file.Length
-        digest = "sha256:$($hashes[$name])"
-    }
-}
-$updateManifest = Join-Path $directory $names[3]
-$metadata = [ordered]@{
-    version = $version
-    repository = $repository
-    channel = if ($version.Contains('-')) { 'beta' } else { 'stable' }
-    files = $updateFiles
-} | ConvertTo-Json -Depth 4
-$metadata | Set-Content -LiteralPath $updateManifest -Encoding utf8
-$files[$names[3]] = Get-Item -LiteralPath $updateManifest
-$hashes[$names[3]] = (Get-FileHash -LiteralPath $updateManifest).Hash.ToLowerInvariant()
-$manifest = Join-Path $directory $names[2]
-if (!(Test-Path -LiteralPath $manifest)) { $manifestLines | Set-Content -LiteralPath $manifest -Encoding ascii }
-$actualLines = @(Get-Content -LiteralPath $manifest)
-if ($actualLines.Count -ne $manifestLines.Count -or @(Compare-Object $actualLines $manifestLines -CaseSensitive).Count) {
-    throw 'SHA256SUMS.txt must contain the exact two package names and their SHA-256 hashes.'
-}
-$files[$names[2]] = Get-Item -LiteralPath $manifest
-$hashes[$names[2]] = (Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant()
+$assetSet = & "$PSScriptRoot/prepare-release.ps1" -Tag $Tag -AssetDirectory $AssetDirectory
+$names = $assetSet.Names
+$files = $assetSet.Files
+$hashes = $assetSet.Hashes
 
 function Read-Release {
-    $json = & gh release view $Tag --repo $repository --json tagName,isDraft,url,assets 2>$null
+    $json = & gh release view $Tag --repo $repository --json tagName,isDraft,isPrerelease,url,assets 2>$null
     if ($LASTEXITCODE -eq 0) { return ($json | ConvertFrom-Json) }
     return $null
 }
@@ -79,13 +46,14 @@ $release = Read-Release
 if (!$release) {
     $options = @('--repo',$repository,'--verify-tag','--draft','--title',"WiskHarness $version")
     if ($version.Contains('-')) { $options += @('--prerelease','--latest=false') }
+    else { $options += '--latest' }
     if ($NotesFile) { $options += @('--notes-file',(Resolve-Path -LiteralPath $NotesFile).Path) }
     else { $options += '--generate-notes' }
     & gh release create $Tag @options
     if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub draft release' }
     $release = Read-Release
 }
-if (!$release -or $release.tagName -ne $Tag) { throw 'Release tag readback failed' }
+if (!$release -or $release.tagName -ne $Tag -or $release.isPrerelease -ne $version.Contains('-')) { throw 'Release tag or channel readback failed' }
 $allowed = @($names | ForEach-Object { Published-Name $_ })
 $expectedAliases = @($names + $allowed)
 if (@($release.assets | Where-Object { $_.name -notin $expectedAliases }).Count) { throw 'Unexpected assets are attached to the release.' }

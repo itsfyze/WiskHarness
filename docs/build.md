@@ -14,7 +14,7 @@ The lockfile pins npm dependencies. Electron Builder writes the portable executa
 
 ## Runtime setup
 
-Ollama must listen on local port 11434 by default. Check `ollama list` and install a model before doing live inference. Goose can be found on PATH or in `%USERPROFILE%\.local\bin`. Setup and Settings can download the official Windows x64 Goose CLI archive or select an existing local executable. The managed download uses Windows' built-in `tar.exe` to read the one executable from the verified archive. It checks the extracted file before saving it to `goose-runtime` inside the profile. Agent Mode checks the selected Goose version and ACP command. The portable download uses Goose 1.59.2. The built-in Windows PowerShell and CMD are supported. WiskHarness prefers PowerShell 7 for Goose when available.
+Ollama must listen on local port 11434 by default. Check `ollama list` and install a model before doing live inference. The Windows packaging step downloads the pinned upstream Vibe ACP 3.1.5 archive, verifies its SHA-256, and bundles the upstream executable and dependencies without modification. Set LOCAL_AGENT_VIBE_RESOURCES to the staged resources directory to use Vibe from the development server. A Vibe model must advertise native tools and allow a context of at least 13,334 tokens. Use native Ollama tools for smaller contexts. Goose can be found on PATH or in `%USERPROFILE%\.local\bin`. Setup and Settings can download the official Windows x64 Goose CLI archive or select an existing local executable. The managed download uses Windows' built-in `tar.exe` to read the one executable from the verified archive. It checks the extracted file before saving it to `goose-runtime` inside the profile. Agent Mode checks the selected Goose version and ACP command. The portable download uses Goose 1.59.2. The built-in Windows PowerShell and CMD are supported. WiskHarness prefers PowerShell 7 for Goose when available.
 
 If the app cannot use its preferred loopback port, it tries nearby ports. If the workspace is inaccessible, choose an existing writable folder. If session storage or vault writes fail, check folder permissions and use a working drive. The app works with Obsidian disabled.
 
@@ -46,7 +46,13 @@ Ollama Agent tracks bounded retries, actual tool results, completion evidence an
 
 In Full Access, routine workspace inspections, compiler and test invocations can run without prompting. A command composition, dependency installation or explicit external path requires separate approval or is blocked by policy. Build and test tools run project code with the current Windows account permissions.
 
-## Verify the beta build
+## Verify desktop and runtime behavior
+
+- Set LOCAL_AGENT_VIBE_RESOURCES to the absolute staged resources directory and run `node --test tests/vibe-contract.test.mjs`. The test uses the bundled ACP executable and a deterministic loopback Ollama fixture to verify tool approval, workspace scope, live review, and Plan and Ask access.
+- Run `node tests/vibe-live.mjs <installed-model>` for a live workspace write, read-back and conversation follow-up. Run `tests/agent-complex-live.mjs` with WISK_VALIDATION_ENGINE=vibe and WISK_VALIDATION_MODEL set to an installed tool-capable model for the project acceptance test.
+- Run `node tests/stable-desktop.mjs <unpacked-WiskHarness.exe> <screenshot-directory>` for the packaged renderer check with controlled Ollama output. It exercises the composer, approvals, metrics, diffs, file browsing, terminal, settings and themes in a disposable profile.
+
+### Legacy tests
 
 Run npm tests for the ordinary regression suite. The following manual checks require their external runtimes and create disposable profiles.
 

@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, screen, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const net = require('node:net');
 const { randomBytes, randomUUID } = require('node:crypto');
@@ -136,6 +136,7 @@ async function ensureBackend() {
     LOCAL_AGENT_PORT: String(chosenPort),
     LOCAL_AGENT_SETTINGS_DIR: settingsFolder,
     LOCAL_AGENT_WORKSPACE: agentWorkspace,
+    LOCAL_AGENT_VIBE_RESOURCES: app.isPackaged ? process.resourcesPath : process.env.LOCAL_AGENT_VIBE_RESOURCES || path.join(runtimeRoot, 'runtime-staging'),
     WISKHARNESS_API_TOKEN: nonce,
     WISKHARNESS_PACKAGE_KIND: packageKind,
     WISKHARNESS_UPDATE_STATUS: packageKind ? updateStatus : ''
@@ -147,7 +148,19 @@ async function ensureBackend() {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
   const child = backendProcess;
-  child.on('message', message => { void handoffUpdate(child, message, settingsFolder); });
+  child.on('message', message => {
+    if (child !== backendProcess) return;
+    if (message?.type === 'workspace-file' && typeof message.file === 'string' && path.isAbsolute(message.file)) {
+      if (message.action === 'reveal') shell.showItemInFolder(message.file);
+      else if (message.action === 'editor') {
+        const editor = spawn(path.join(process.env.WINDIR || 'C:/Windows', 'notepad.exe'), [message.file], {stdio:'ignore', detached:true});
+        editor.once('error', error => log('Could not open editor: ' + error.message));
+        editor.unref();
+      }
+      return;
+    }
+    void handoffUpdate(child, message, settingsFolder);
+  });
   startedBackend = true;
   backendProcess.stdout.on('data', data => log('[server] ' + String(data).trim()));
   backendProcess.stderr.on('data', data => log('[server/error] ' + String(data).trim()));
@@ -164,9 +177,15 @@ async function ensureBackend() {
   throw new Error('Backend startup failed. See desktop-runtime.log in the WiskHarness app data folder.');
 }
 function createWindow(ready) {
+  const stateFile=path.join(app.getPath('userData'),'window-state.json');
+  let saved={};
+  try{saved=JSON.parse(readFileSync(stateFile,'utf8'));}catch{}
+  const visible=Number.isInteger(saved.x)&&Number.isInteger(saved.y)&&screen.getAllDisplays().some(({workArea})=>
+    saved.x+80>=workArea.x&&saved.y+40>=workArea.y&&saved.x<workArea.x+workArea.width&&saved.y<workArea.y+workArea.height);
   window = new BrowserWindow({
-    width: 1480,
-    height: 940,
+    width: Math.min(3840,Math.max(1000,Number.isInteger(saved.width)?saved.width:1480)),
+    height: Math.min(2160,Math.max(660,Number.isInteger(saved.height)?saved.height:940)),
+    ...(visible?{x:saved.x,y:saved.y}:{}),
     minWidth: 1000,
     minHeight: 660,
     backgroundColor: '#111217',
@@ -181,6 +200,11 @@ function createWindow(ready) {
       webSecurity: true,
       devTools: !app.isPackaged
     }
+  });
+  if(saved.maximized===true)window.maximize();
+  window.on('close',()=>{
+    try{writeFileSync(stateFile,JSON.stringify({...window.getNormalBounds(),maximized:window.isMaximized()}));}
+    catch(error){log('Could not save window placement: '+error.message);}
   });
   window.webContents.session.setPermissionRequestHandler((_web, _permission, decide) => decide(false));
   window.webContents.session.setPermissionCheckHandler(() => false);

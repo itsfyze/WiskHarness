@@ -20,7 +20,7 @@ export class SessionStore {
     try{
       const item=JSON.parse(fs.readFileSync(this.filepath(id),"utf8"));
       if(item.id!==id||!Array.isArray(item.messages))return null;
-      item.mode=item.mode==="plan"?"plan":"agent";
+      if(!["plan","ask","agent"].includes(item.mode))item.mode="agent";
       return item;
     }catch(e){
       if(e.code==="ENOENT")return null;
@@ -50,11 +50,11 @@ export class SessionStore {
         const item=this.get(id);
         if(!item)continue;
         if(query&&!item.title.toLowerCase().includes(query)&&!item.messages.some(m=>String(m.text||"").toLowerCase().includes(query)))continue;
-        arr.push({id:item.id,title:item.title,workspace:item.workspace,model:item.model,mode:item.mode,createdAt:item.createdAt,updatedAt:item.updatedAt,status:item.status,messageCount:item.messages.length,
+        arr.push({id:item.id,title:item.title,workspace:item.workspace,model:item.model,mode:item.mode,pinned:item.pinned===true,archived:item.archived===true,createdAt:item.createdAt,updatedAt:item.updatedAt,status:item.status,messageCount:item.messages.length,
           preview:(item.messages.findLast?.(m=>m.role==="user")?.text||"").slice(0,135)});
       }catch(e){console.warn("Skipped invalid session "+id+": "+String(e).slice(0,140))}
     }
-    return arr.sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,600);
+    return arr.sort((a,b)=>Number(b.pinned)-Number(a.pinned)||String(b.updatedAt).localeCompare(String(a.updatedAt))).slice(0,600);
   }
   remove(id){
     if(!this.get(id))return false;

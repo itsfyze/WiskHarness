@@ -1,3 +1,5 @@
+import {highlightedLine} from "./markdown.js";
+
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 }[c]));
@@ -89,7 +91,7 @@ export async function mountInternet(target, inSettings=false, running=false) {
       try{
         data=await request("/api/agent/internet",body);
         draw();
-        output.textContent=action?"Search endpoint saved.":data.enabled?"Built-in web tools enabled.":"Built-in web tools disabled.";
+        output.textContent=action?"Search settings saved.":data.enabled?"Built-in web tools enabled.":"Built-in web tools disabled.";
       }catch(error){output.textContent=error.message}
       finally {toggle.disabled=running;if(action)action.disabled=false}
     }
@@ -102,7 +104,22 @@ export async function mountInternet(target, inSettings=false, running=false) {
         '<label class="field-label" for="agent-search-endpoint">SearXNG search URL (optional)</label>'+
         '<div class="field-row"><input class="field" type="url" id="agent-search-endpoint" maxlength="2048" placeholder="https://your-search-host/search">'+
         '<button class="btn" type="button">Save search URL</button></div>'+
-        '<p class="inline-help">GitHub and Wikipedia search work without setup. Broad search uses a public HTTPS SearXNG endpoint with JSON enabled. Page retrieval works independently.</p>';
+        '<p class="inline-help">GitHub and Wikipedia search work without setup. SearXNG requires JSON output and accepts public HTTPS or explicitly configured loopback HTTP. Page retrieval works independently.</p>';
+      section.insertAdjacentHTML("beforeend",'<label class="field-label" for="web-provider">General search service</label><select class="field" id="web-provider"><option value="searxng">SearXNG</option><option value="brave">Brave Search</option></select>'+
+        '<label class="field-label" for="brave-key">Brave Search API key</label><input class="field" id="brave-key" type="password" autocomplete="off" placeholder="'+(data.braveConfigured?"Key saved":"Paste a key")+'">'+
+        '<div class="workbench-actions"><button class="btn" id="web-save" type="button">Save service</button><button class="btn" id="web-test" type="button">Test search</button></div>');
+      const service=section.querySelector("#web-provider"),key=section.querySelector("#brave-key"),search=section.querySelector("#web-test");
+      service.value=data.provider;
+      section.querySelector("#web-save").onclick=async event=>{
+        await update({provider:service.value,key:key.value||undefined},event.currentTarget);
+        key.value="";
+      };
+      search.onclick=async()=>{
+        search.disabled=true;
+        try{const result=await request("/api/agent/internet/test",{});output.textContent=result.result.split("\n").slice(0,2).join(" · ");}
+        catch(error){output.textContent=error.message;}
+        finally{search.disabled=false;}
+      };
       const input=section.querySelector("input"),save=section.querySelector("button");
       input.value=data.searchEndpoint;
       save.onclick=()=>void update({searchEndpoint:input.value.trim()},save);
@@ -112,7 +129,7 @@ export async function mountInternet(target, inSettings=false, running=false) {
   }catch(error){if(target.isConnected)target.textContent=error.message}
 }
 
-const gooseRuntimePanel = () => card("Goose runtime","Required for Agent Mode. Plan Mode can run without Goose.",
+const gooseRuntimePanel = () => card("Goose runtime","Optional fallback for Agent mode.",
   '<div data-goose-runtime><p role="status">Looking for Goose…</p></div>');
 
 export function gooseRuntimeLabel(runtime) {
@@ -230,6 +247,24 @@ export async function showSetup(onSaved, onGooseChanged) {
       await onSaved();
     } catch(error) {message(dialog,error.message)}
   };
+}
+
+async function mountOllamaEndpoint(panel,onSaved){
+  panel.insertAdjacentHTML("beforeend",card("Ollama server","Model discovery and inference",'<form id="ollama-address-form"><label class="field-label" for="ollama-address">Server address</label><input class="field" id="ollama-address" type="url" required><p class="inline-help">A remote Ollama server receives your chat and tool results. Use a server you trust.</p><label class="terminal-confirm"><input type="checkbox" required> I trust this Ollama server</label><div class="workbench-actions"><button class="btn">Test and save</button></div><p role="status" data-status></p></form>'));
+  const form=panel.querySelector("#ollama-address-form");
+  const field=form.querySelector("#ollama-address");
+  try{
+    const info=await request("/api/ollama");
+    field.value=info.endpoint;
+    if(info.managed){for(const control of form.elements)control.disabled=true;message(form,"Managed by the launch configuration.");}
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      const save=event.submitter;save.disabled=true;
+      try{await request("/api/ollama",{endpoint:field.value,confirmed:true});await onSaved();}
+      catch(error){message(form,error.message);}
+      finally{save.disabled=false;}
+    };
+  }catch(error){message(form,error.message);}
 }
 
 function updateDetails(data) {
@@ -474,13 +509,13 @@ async function mountVault(panel){
 async function mountExecution(panel,onSaved) {
   const target=panel.querySelector("#agent-execution");
   try{
-    const {budget,engine}=await request("/api/agent/execution");
+    const {budget,engine,vibe}=await request("/api/agent/execution");
     if(!target.isConnected)return;
     target.innerHTML='<form><label class="field-label" for="agent-engine">Engine</label><select class="field" id="agent-engine">'+
-      '<option value="ollama">Ollama native tools</option><option value="goose">Goose ACP (legacy)</option></select>'+
+      '<option value="vibe" '+(vibe?.installed?"":"disabled")+'>Mistral Vibe'+(vibe?.installed?" "+esc(vibe.version):" (unavailable)")+'</option><option value="ollama">Ollama native tools</option><option value="goose">Goose ACP (legacy)</option></select>'+
       [["rounds","Model rounds",2,160],["calls","Tool calls",1,400],["minutes","Time limit in minutes",1,90],["recovery","Recovery attempts without progress",2,15],["context","Maximum context tokens",4096,131072]].map(([key,label,min,max])=>
         '<label class="field-label" for="agent-budget-'+key+'">'+label+'</label><input class="field" type="number" id="agent-budget-'+key+'" min="'+min+'" max="'+max+'" value="'+budget[key]+'" required>').join("")+
-      '<p class="inline-help">Ollama uses these limits. Goose uses the time limit and its own model and tool limits.</p><p role="status" data-status></p><button class="btn btn-primary">Save execution settings</button></form>';
+      '<p class="inline-help">Vibe and Ollama enforce these limits. Goose uses the time limit and manages its model and tool limits.</p><p role="status" data-status></p><button class="btn btn-primary">Save execution settings</button></form>';
     target.querySelector("#agent-engine").value=engine;
     const form=target.querySelector("form");
     form.onsubmit=async event=>{
@@ -507,6 +542,7 @@ export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChan
     card("Setup and diagnostics","Local dependencies, workspace and optional memory",button("open-setup","Open setup"))+
     card("Obsidian","Optional checkpoints for Agent work",'<div id="vault-settings">Loading Obsidian settings…</div>'));
   void mountVault(panel);
+  void mountOllamaEndpoint(panel,onSaved);
   void mountExecution(panel,onSaved);
   panel.querySelector("#open-setup").onclick = () => void showSetup(onSaved,onGooseChanged);
   void mountGooseRuntime(panel,onGooseChanged);
@@ -746,7 +782,7 @@ function showTask(session, onResume) {
   const dialog=modal("Task checklist", task ? '<p>'+esc(task.description)+'</p><div class="status-list">'+row("Task status",status)+
     row("Last checkpoint",time(task.checkpointAt))+row("Verification",task.verification)+
     row("Changed files",task.modified?.join(", ")||"None captured")+'</div>'+
-    (plan.length?'<h3>Goose plan</h3><div class="status-list">'+plan.map(step=>row(step.title,step.status)).join("")+'</div>':'')+
+    (plan.length?'<h3>Agent plan</h3><div class="status-list">'+plan.map(step=>row(step.title,step.status)).join("")+'</div>':'')+
     '<h3>Observed actions</h3>'+(actions.length?'<div class="status-list">'+actions.map(action=>row(action.title,action.status)).join("")+'</div>':'<p>No tool events have been captured.</p>')+
     (resumable?'<p>Review the checkpoint before sending a new prompt. No earlier commands will replay automatically.</p>'+button("resume-task","Prepare resume",true):""):'<p>Run an Agent task to start a checklist.</p>');
   if(resumable)dialog.querySelector("#resume-task").onclick=()=>{
@@ -756,7 +792,7 @@ function showTask(session, onResume) {
   };
 }
 
-function showReview(initial, onSaved) {
+function showReview(initial, onSaved, changeId) {
   const base="/api/sessions/"+encodeURIComponent(initial.id);
   let session=initial;
   const dialog=modal("File changes",'<p>These are observed workspace changes. Agent edits are already applied.</p><section id="review-body"></section><p role="status" data-status></p>');
@@ -767,16 +803,68 @@ function showReview(initial, onSaved) {
     const item=changes[selected];
     const before=item.before?.text??null,after=item.after?.text??null;
     const diff=lineDiff(before,after);
+    const added=diff?.filter(([sign])=>sign==="+").length;
+    const removed=diff?.filter(([sign])=>sign==="−").length;
     body.innerHTML='<label class="field-label" for="change-select">Changed file</label><select class="field" id="change-select">'+changes.map((file,index)=>
       '<option value="'+index+'" '+(index===selected?"selected":"")+'>'+esc(file.name+" · "+file.kind+" · "+file.disposition)+'</option>').join("")+'</select>'+
       (review.limited?'<p>Snapshot coverage is limited by file count, size, type, and excluded folders.</p>':'')+
-      '<div class="diff-panes"><section aria-label="Before"><h3>Before</h3><pre>'+esc(before??"File absent")+'</pre></section>'+
-      '<section aria-label="After"><h3>After</h3><pre>'+esc(after??"File absent")+'</pre></section></div>'+
-      (diff?'<details class="diff-unified" open><summary>Line differences</summary><pre>'+diff.map(([sign,line])=>
-        '<span class="'+(sign==="+"?"diff-add":sign==="−"?"diff-remove":"")+'">'+esc(sign+" "+line)+'</span>').join("\n")+'</pre></details>':'')+
+      '<div class="review-switch"><span>'+esc(item.origin==="agent"?"Agent change":"Workspace change")+(item.binary?" · Binary":item.large?" · Large file":diff?" · +"+added+" / −"+removed:"")+'</span>'+
+      '<div class="diff-actions"><button class="btn btn-small" type="button" data-prev>Previous change</button><button class="btn btn-small" type="button" data-next>Next change</button><button class="btn btn-small" type="button" data-layout>Side by side</button></div></div><div data-diff></div>'+
+      '<div class="workbench-actions">'+button("change-copy","Copy path")+
+      (item.after?button("change-open","Open in editor"):"")+(item.after?button("change-reveal","Reveal in Explorer"):"")+'</div>'+
       (item.disposition==="applied"?'<div class="workbench-actions">'+button("change-keep","Keep change")+
-        (item.kind==="modified"?button("change-revert","Revert snapshot"):"")+'</div>':'');
+        (item.reversible!==false&&["modified","added"].includes(item.kind)?button("change-revert","Revert change"):"")+'</div>':'');
     body.querySelector("#change-select").onchange=event=>draw(Number(event.target.value));
+    const code=body.querySelector("[data-diff]");
+    const layout=body.querySelector("[data-layout]");
+    let side=false,position=-1;
+    const fileExt=item.name.split(".").pop().toLowerCase();
+    const language=({py:"python",js:"javascript",mjs:"javascript",cjs:"javascript",ts:"typescript",tsx:"typescript",cs:"csharp",
+      html:"xml",md:"markdown",rs:"rust",cpp:"cpp",ps1:"powershell",yml:"yaml"})[fileExt]||fileExt;
+    function renderDiff(){
+      layout.textContent=side?"Unified":"Side by side";
+      if(!diff||item.binary||item.large){
+        for(const button of body.querySelectorAll(".diff-actions button"))button.hidden=true;
+        code.textContent=item.binary?"Binary file preview unavailable.":"Line diff unavailable for this file size.";
+        return;
+      }
+      let left=0,right=0;
+      code.className=side?"diff-grid split":"diff-grid";
+      position=-1;
+      const rows=diff.map(([sign,line])=>{
+        const a=sign==="+"?"":++left,b=sign==="−"?"":++right;
+        const kind=sign==="+"?"diff-add":sign==="−"?"diff-remove":"";
+        const source=(diff.length<=1000?highlightedLine(line,language):null)??esc(line);
+        if(side)return '<div class="diff-line '+(sign===" "?"":"diff-changed")+'"><span class="'+(a?kind:"")+'"><b>'+a+'</b><code>'+(a?source:"")+'</code></span><span class="'+(b?kind:"")+'"><b>'+b+'</b><code>'+(b?source:"")+'</code></span></div>';
+        return '<div class="diff-line '+kind+(sign===" "?"":" diff-changed")+'"><b>'+a+'</b><b>'+b+'</b><strong>'+sign+'</strong><code>'+source+'</code></div>';
+      });
+      let html="";
+      for(let i=0;i<rows.length;){
+        if(diff[i][0]!==" "){html+=rows[i++];continue}
+        const start=i;
+        while(i<rows.length&&diff[i][0]===" ")i++;
+        if(i-start>8)html+=rows.slice(start,start+2).join("")+'<details class="diff-fold"><summary>Show '+(i-start-4)+' unchanged lines</summary>'+rows.slice(start+2,i-2).join("")+'</details>'+rows.slice(i-2,i).join("");
+        else html+=rows.slice(start,i).join("");
+      }
+      code.innerHTML=html;
+    }
+    function navigate(step){
+      const changes=[...code.querySelectorAll(".diff-changed")];
+      if(!changes.length)return;
+      position=position===-1&&step===-1?changes.length-1:(position+step+changes.length)%changes.length;
+      for(const line of changes)line.classList.remove("current-change");
+      changes[position].classList.add("current-change");
+      changes[position].scrollIntoView({block:"nearest"});
+    }
+    body.querySelector("[data-prev]").onclick=()=>navigate(-1);
+    body.querySelector("[data-next]").onclick=()=>navigate(1);
+    layout.onclick=()=>{side=!side;renderDiff()};
+    renderDiff();
+    body.querySelector("#change-copy").onclick=()=>void navigator.clipboard.writeText(session.workspace+"\\"+item.name).catch(error=>message(dialog,error.message));
+    for(const [id,action] of [["change-open","editor"],["change-reveal","reveal"]]){
+      const button=body.querySelector("#"+id);
+      if(button)button.onclick=()=>void request(base+"/files/open",{path:item.name,action,confirmed:true}).catch(error=>message(dialog,error.message));
+    }
     async function change(action) {
       const confirmed=action==="revert"&&window.confirm("Restore the captured before-state of "+item.name+"? WiskHarness will check for later edits first.");
       if(action==="revert"&&!confirmed)return;
@@ -792,18 +880,21 @@ function showReview(initial, onSaved) {
     if(keep)keep.onclick=()=>change("accept");
     if(revert)revert.onclick=()=>change("revert");
   }
-  draw();
+  draw(Math.max(0,(session.review?.changes||[]).findIndex(item=>item.id===changeId)));
 }
 
-function showTerminal(session) {
+function showTerminal(session, target) {
   const base="/api/sessions/"+encodeURIComponent(session.id)+"/terminal";
-  const dialog=modal("Terminal",'<p class="codepath">'+esc(session.workspace)+'</p>'+
+  const content='<p class="codepath">'+esc(session.workspace)+'</p>'+
     '<form id="terminal-form"><label class="field-label" for="terminal-shell">Shell</label><select class="field" id="terminal-shell"><option value="powershell">PowerShell</option><option value="cmd">Command Prompt</option></select>'+
     '<label class="field-label" for="terminal-command">Command</label><textarea class="field" id="terminal-command" rows="2" maxlength="8000" required></textarea>'+
     '<label class="terminal-confirm"><input id="terminal-confirm" type="checkbox" required> I reviewed this command. It runs with my Windows permissions.</label>'+
     '<div class="workbench-actions"><button class="btn btn-primary" id="terminal-run">Run command</button>'+button("terminal-stop","Stop")+'</div></form>'+
     '<label class="field-label" for="terminal-history">Command history</label><select class="field" id="terminal-history"></select>'+
-    '<details class="terminal-output" open><summary>Output</summary><pre id="terminal-output" tabindex="0"></pre>'+button("terminal-copy","Copy output")+'</details><p role="status" data-status></p>');
+    '<details class="terminal-output" open><summary>User terminal</summary><pre id="terminal-output" tabindex="0"></pre>'+button("terminal-copy","Copy output")+'</details><p role="status" data-status></p>';
+  const dialog=target||modal("Terminal",content);
+  if(target)target.innerHTML=content;
+  const visible=()=>target?target.isConnected&&form.isConnected:dialog.open;
   const form=dialog.querySelector("#terminal-form"),history=dialog.querySelector("#terminal-history"), output=dialog.querySelector("#terminal-output");
   const stop=dialog.querySelector("#terminal-stop"),runButton=dialog.querySelector("#terminal-run");
   let records=[],selected="",running=null,timer;
@@ -817,11 +908,11 @@ function showTerminal(session) {
     runButton.disabled=!!running;
   }
   async function read() {
-    if(!dialog.open)return;
+    if(!visible())return;
     clearTimeout(timer);
     try{
       const {history:saved,running:active}=await request(base);
-      if(!dialog.open)return;
+      if(!visible())return;
       running=active;
       records=active?[...saved.filter(item=>item.id!==active.id),active]:saved;
       if(!records.some(item=>item.id===selected))selected=records.at(-1)?.id||"";
@@ -829,7 +920,7 @@ function showTerminal(session) {
       history.replaceChildren(...options.reverse());history.value=selected;
       show();
     }catch(error){message(dialog,error.message)}
-    if(dialog.open&&running)timer=setTimeout(read,450);
+    if(visible()&&running)timer=setTimeout(read,450);
   }
   history.onchange=()=>{selected=history.value;show()};
   form.onsubmit=async event=>{
@@ -868,3 +959,197 @@ export function mountAgentTools(panel, session, onResume, onSaved) {
 }
 
 
+
+export function mountDevelopment(panel, session, onSaved) {
+  if(!panel||session?.mode!=="agent")return null;
+  const base="/api/sessions/"+encodeURIComponent(session.id);
+  const tabs=[["changes","Changes"],["files","Files"],["terminal","Terminal"],["progress","Progress"]];
+  panel.innerHTML='<div class="development-tabs" role="tablist" aria-label="Development">'+tabs.map(([id,label])=>
+    '<button type="button" role="tab" data-tab="'+id+'" aria-controls="development-content">'+label+'</button>').join("")+
+    '</div><section id="development-content" class="development-content" role="tabpanel" tabindex="0"></section>';
+  const root=panel.querySelector("#development-content");
+  let selected=tabs.some(([id])=>id===localStorage.getItem("wisk-development-tab"))?localStorage.getItem("wisk-development-tab"):"changes";
+  let version=0, folder="", command=null;
+  async function select(tab,focus=false){
+    selected=tab;
+    localStorage.setItem("wisk-development-tab",tab);
+    const requestId=++version;
+    for(const button of panel.querySelectorAll("[data-tab]")){
+      const active=button.dataset.tab===tab;
+      button.setAttribute("aria-selected",String(active));button.tabIndex=active?0:-1;
+      if(active){button.id="development-"+tab;if(focus)button.focus()}else button.removeAttribute("id");
+    }
+    root.setAttribute("aria-labelledby","development-"+tab);
+    root.replaceChildren();
+    try{
+      if(tab==="changes"){
+        const review=await request(base+"/review");
+        if(requestId!==version||!root.isConnected)return;
+        const changes=review.changes;
+        if(!changes.length){root.textContent=review.active?"Waiting for work to change files.":"No changes captured for this task.";return}
+        root.innerHTML='<div class="development-caption">'+changes.length+' changed '+(changes.length===1?"file":"files")+
+          (review.active?" · Live":"")+'</div><input class="field" type="search" aria-label="Filter changes" placeholder="Filter changes"><div data-change-list></div>'+
+          (review.limited?'<p class="inline-help">Some paths are outside snapshot coverage.</p>':"");
+        function list(){
+          const q=root.querySelector("input").value.toLowerCase();
+          const entries=changes.filter(change=>change.name.toLowerCase().includes(q));
+          const rows=entries.map(change=>{
+            const button=document.createElement("button");
+            button.className="development-entry";
+            const status=document.createElement("small");
+            status.textContent=change.kind;
+            button.append(document.createTextNode(change.name),status);
+            button.title=(change.origin==="agent"?"Agent change":"Observed workspace change")+" · "+change.name;
+            button.onclick=()=>showReview({...session,review},onSaved,change.id);
+            return button;
+          });
+          root.querySelector("[data-change-list]").replaceChildren(...rows);
+        }
+        root.querySelector("input").oninput=list;
+        list();
+      }else if(tab==="files"){
+        const data=await request(base+"/files?path="+encodeURIComponent(folder));
+        if(requestId!==version||!root.isConnected)return;
+        root.innerHTML='<div class="development-caption"></div><div data-file-list></div>';
+        const header=root.querySelector(".development-caption");
+        if(folder){
+          const back=document.createElement("button");
+          back.className="btn btn-small";back.textContent="Up";
+          back.onclick=()=>{folder=folder.split(/[\\/]/).slice(0,-1).join("/");void select(tab)};
+          header.append(back);
+        }
+        const title=document.createElement("strong");title.textContent=folder||"Workspace files";header.append(title);
+        const list=root.querySelector("[data-file-list]");
+        if(data.entries){
+          const filter=document.createElement("input");
+          filter.className="field";filter.type="search";filter.placeholder="Filter this folder";filter.setAttribute("aria-label","Filter this folder");
+          list.before(filter);
+          const render=()=>{
+            list.replaceChildren(...data.entries.filter(item=>item.name.toLowerCase().includes(filter.value.toLowerCase())).map(item=>{
+              const button=document.createElement("button");
+              button.className="development-entry";
+              const kind=document.createElement("small");kind.textContent=item.directory?"Folder":"File";
+              button.append(document.createTextNode(item.name),kind);
+              button.onclick=()=>{folder=item.path;void select(tab)};
+              return button;
+            }));
+          };
+          filter.oninput=render;render();
+        }else{
+          const pre=document.createElement("pre");pre.textContent=data.preview??"Preview unavailable for binary or large files.";list.append(pre);
+          const copy=document.createElement("button");copy.className="btn btn-small";copy.textContent="Copy path";
+          copy.onclick=()=>void navigator.clipboard.writeText(session.workspace+"\\"+data.path).catch(error=>{title.textContent=error.message});list.append(copy);
+          for(const [label,action] of [["Open in editor","editor"],["Reveal in Explorer","reveal"]]){
+            const open=document.createElement("button");open.className="btn btn-small";open.textContent=label;
+            open.onclick=()=>void request(base+"/files/open",{path:data.path,action,confirmed:true}).catch(error=>{title.textContent=error.message});
+            list.append(open);
+          }
+        }
+      }else if(tab==="terminal"){
+        root.innerHTML='<div class="development-command" hidden><strong>Agent command</strong><pre></pre></div><div data-user-terminal></div>';
+        showTerminal(session,root.querySelector("[data-user-terminal]"));
+        updateCommand();
+      }else{
+        const task=session.task;
+        root.innerHTML=task?'<p>'+esc(task.stopReason?.replaceAll("_"," ")||task.status||"Running")+'</p>'+
+          (task.checkpoint?.checklist||[]).map(item=>row(item.label,item.evidence?"Verified":"Outstanding")).join("")+
+          (task.actions||[]).slice(-12).map(item=>row(item.title,item.status)).join(""):"<p>No tool activity yet.</p>";
+      }
+    }catch(error){
+      if(requestId===version&&root.isConnected)root.textContent=error.message;
+    }
+  }
+  function updateCommand(){
+    const target=root.querySelector(".development-command");
+    if(!target||!command)return;
+    target.hidden=false;
+    target.querySelector("strong").textContent="Agent command · "+command.state+(command.code===null?"":" · Exit "+command.code);
+    target.querySelector("pre").textContent=command.command+"\n"+(command.chunks||[]).map(part=>part.text).join("");
+  }
+  const bar=panel.querySelector(".development-tabs");
+  bar.onclick=event=>{
+    const tab=event.target.closest("[data-tab]")?.dataset.tab;
+    if(tab)void select(tab);
+  };
+  bar.onkeydown=event=>{
+    const at=tabs.findIndex(([id])=>id===selected);
+    const next=event.key==="ArrowRight"?(at+1)%tabs.length:event.key==="ArrowLeft"?(at+tabs.length-1)%tabs.length:event.key==="Home"?0:event.key==="End"?tabs.length-1:null;
+    if(next!==null){event.preventDefault();void select(tabs[next][0],true)}
+  };
+  void select(selected);
+  return event=>{
+    if(!root.isConnected)return;
+    if(event.type==="review"&&selected==="changes"||event.type==="task"&&selected==="progress")void select(selected);
+    if(event.type==="agent-terminal"){command=event.command;updateCommand()}
+    if(event.type==="open-file"){folder=event.path;void select("files")}
+  };
+}
+
+export async function mountMcpPage(root) {
+  if(!root)return;
+  const header='<header class="page-heading-row"><div><h1 class="page-heading">MCP servers</h1><p class="page-desc">Connect tools you trust to Mistral Vibe.</p></div></header>';
+  root.innerHTML=header+'<p role="status">Loading servers…</p>';
+  let state;
+  try{state=await request("/api/mcp");}
+  catch(error){root.querySelector("[role=status]").textContent=error.message;return}
+  if(!root.isConnected)return;
+  if(!state.available){root.querySelector("[role=status]").textContent="Open WiskHarness Desktop to manage MCP.";return}
+  root.innerHTML=header+'<div data-mcp-list class="status-list"></div>'+
+    '<form class="card mcp-form"><div class="card-content"><label class="field-label" for="mcp-id">Server name</label><input class="field" required id="mcp-id" pattern="[a-z][a-z0-9_-]{0,24}">'+
+    '<label class="field-label" for="mcp-transport">Transport</label><select class="field" id="mcp-transport"><option value="http">Streamable HTTP</option><option value="stdio">Local executable</option></select>'+
+    '<label class="field-label" for="mcp-address" data-address>Endpoint URL</label><input class="field" id="mcp-address" required>'+
+    '<div data-mcp-arguments hidden><label class="field-label" for="mcp-args">Arguments, one per line</label><textarea class="field" rows="3" id="mcp-args"></textarea></div>'+
+    '<label class="field-label" for="mcp-auth">Credentials as JSON</label><input class="field" type="password" autocomplete="off" id="mcp-auth" placeholder="Optional">'+
+    '<p class="inline-help" data-mcp-tip></p><label class="terminal-confirm"><input type="checkbox" id="mcp-enabled"> Enable for Vibe Agent chats</label>'+
+    '<label class="terminal-confirm"><input type="checkbox" id="mcp-trust" required> I trust this server and its configured program or endpoint</label>'+
+    '<div class="workbench-actions"><button class="btn btn-primary">Save server</button><button type="button" class="btn" data-mcp-new>New server</button></div><p role="status" data-status></p></div></form>';
+  const form=root.querySelector("form");
+  const field=name=>form.querySelector("#mcp-"+name);
+  const list=root.querySelector("[data-mcp-list]");
+  const mode=()=>{
+    const stdio=field("transport").value==="stdio";
+    form.querySelector("[data-address]").textContent=stdio?"Executable path":"Endpoint URL";
+    form.querySelector("[data-mcp-arguments]").hidden=!stdio;
+    form.querySelector("[data-mcp-tip]").textContent=stdio?"Use a JSON object of environment variable names and values.":"For bearer authentication, use a JSON object with a bearer field.";
+  };
+  function draw(){
+    list.innerHTML=state.servers.length?state.servers.map(server=>'<div class="mcp-server"><div><strong>'+esc(server.id)+'</strong><p>'+esc([server.enabled?"Enabled":"Disabled",server.transport,server.status?.state,server.credentialsSaved?"Credentials saved":null].filter(Boolean).join(" · "))+'</p>'+
+      (server.status?.tools?.length?'<p>'+esc(server.status.tools.join(", "))+'</p>':'')+'</div><div class="workbench-actions">'+
+      '<button class="btn btn-small" data-mcp="edit" data-id="'+esc(server.id)+'">Edit</button>'+
+      '<button class="btn btn-small" data-mcp="test" data-id="'+esc(server.id)+'">Test connection</button>'+
+      '<button class="btn btn-small" data-mcp="remove" data-id="'+esc(server.id)+'">Remove</button></div></div>').join(""):"<p>No MCP servers configured.</p>";
+  }
+  list.onclick=async event=>{
+    const button=event.target.closest("[data-mcp]");
+    if(!button)return;
+    const server=state.servers.find(item=>item.id===button.dataset.id);
+    const operation=button.dataset.mcp;
+    if(operation==="edit"){
+      form.reset();field("id").value=server.id;field("id").readOnly=true;
+      field("transport").value=server.transport;field("address").value=server.command||server.url;
+      field("args").value=(server.args||[]).join("\n");field("enabled").checked=server.enabled;
+      field("auth").placeholder=server.credentialsSaved?"Saved. Enter {} to clear.":"Optional";
+      mode();field("address").focus();return;
+    }
+    if(operation==="remove"&&!window.confirm("Remove "+server.id+" and its saved credentials?"))return;
+    button.disabled=true;
+    try{state=await request("/api/mcp",{id:server.id,operation,confirmed:true});draw();message(form,operation==="test"?"Connection tested.":"Server removed.");}
+    catch(error){message(form,error.message);}
+    finally{button.disabled=false;}
+  };
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const transport=field("transport").value, address=field("address").value.trim();
+    const save=form.querySelector("button");save.disabled=true;
+    try{
+      state=await request("/api/mcp",{operation:"save",confirmed:field("trust").checked,id:field("id").value,
+        enabled:field("enabled").checked,transport,...(transport==="http"?{url:address}:{command:address,args:field("args").value.split(/\r?\n/).filter(Boolean)}),
+        auth:field("auth").value?JSON.parse(field("auth").value):undefined});
+      field("auth").value="";field("trust").checked=false;draw();message(form,"Server saved.");
+    }catch(error){message(form,error.message);}
+    finally{save.disabled=false;}
+  };
+  form.querySelector("[data-mcp-new]").onclick=()=>{form.reset();field("id").readOnly=false;mode();field("id").focus();};
+  field("transport").onchange=mode;
+  mode();draw();
+}

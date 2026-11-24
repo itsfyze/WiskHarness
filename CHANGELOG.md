@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.3
+
+- Bundle Mistral Vibe as the primary Agent runtime for tool-capable Ollama models. Keep native Ollama and Goose as fallback choices.
+- Add an optional development panel for live changes, diff review, file previews, terminal output and task progress.
+- Add Ink and Paper themes, grouped chats, pins and archives. Keep the existing themes and composer controls.
+- Show live speed estimates and measured Ollama speed below the composer. Use Agent to execute, Plan to inspect and propose, or Ask for a tool-free answer.
+- Support configured SearXNG and Brave Search, remote Ollama endpoints, per-model Vibe options and a managed list of approved MCP servers.
+- Keep the Windows updater, existing chats, task checkpoints and profile settings.
+
 ## 0.7.3-beta.7
 
 - Continue through interim summaries and ordinary tool failures within bounded recovery and execution budgets.

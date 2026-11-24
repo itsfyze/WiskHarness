@@ -12,7 +12,7 @@ const clean = value => redactSecrets(value);
 const cloudSettings = value => Object.fromEntries(Object.entries(value || {}).map(([id, config]) => [id, providerConfig(id, config)]));
 
 function record(item) {
-  if (!item || !uuid.test(item.id) || !localPath(item.workspace) || !["agent", "plan"].includes(item.mode) ||
+  if (!item || !uuid.test(item.id) || !localPath(item.workspace) || !["agent", "plan", "ask"].includes(item.mode) ||
       !Array.isArray(item.messages) || item.messages.length > 4000 || !model(item.model) ||
       item.mode === "agent" && parseModelRef(item.model)) throw new Error("Invalid backup conversation");
   const messages = item.messages.map(message => {
@@ -23,7 +23,7 @@ function record(item) {
   return { id: item.id, workspace: item.workspace, mode: item.mode,
     title: clean(typeof item.title === "string" ? item.title.slice(0, 90) : "Imported chat"),
     model: item.model || null, status: "completed", createdAt: date(item.createdAt), updatedAt: date(item.updatedAt),
-    gooseSessionId: null, messages };
+    gooseSessionId: null, pinned:item.pinned===true, archived:item.archived===true, messages };
 }
 
 function date(value) {
@@ -34,14 +34,14 @@ function date(value) {
 function preferences(input) {
   if (!input || !localPath(input.workspace) || !Array.isArray(input.projects) || input.projects.length > 600 ||
       !input.projects.every(localPath) || !model(input.model) || parseModelRef(input.model) ||
-      !model(input.modeDefaults?.plan) || !model(input.modeDefaults?.agent) || parseModelRef(input.modeDefaults?.agent)) {
+      !model(input.modeDefaults?.plan) || !model(input.modeDefaults?.ask) || !model(input.modeDefaults?.agent) || parseModelRef(input.modeDefaults?.agent)) {
     throw new Error("Invalid backup preferences");
   }
   const toolOptions = securitySettings({ workspaceOnly:input.workspaceOnly, secretProtection:input.secretProtection,
     toolPolicies:input.toolPolicies, confirmed:true }, {});
   return {
     ...toolOptions, workspace:path.resolve(input.workspace), projects:[...new Set(input.projects.map(value=>path.resolve(value)))],
-    model:input.model||null, modeDefaults:{ plan:input.modeDefaults?.plan||null, agent:input.modeDefaults?.agent||null },
+    model:input.model||null, modeDefaults:{ plan:input.modeDefaults?.plan||null, ask:input.modeDefaults?.ask||null, agent:input.modeDefaults?.agent||null },
     providers:cloudSettings(input.providers), agentInstructions:clean(typeof input.agentInstructions==="string"?input.agentInstructions.slice(0,12000):""),
     updateAutomatic:input.updateAutomatic===true, updateChannel:input.updateChannel==="beta"?"beta":"stable",
     contextTokens:Number.isSafeInteger(input.contextTokens)&&input.contextTokens>=1024&&input.contextTokens<=262144?input.contextTokens:null,

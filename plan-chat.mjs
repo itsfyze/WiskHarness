@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 
 const instruction = "You are in Plan mode. Help the user reason, brainstorm, explain and plan. You have no tools and cannot inspect files, run commands or write notes. Describe checks as proposed steps unless the user supplies evidence.";
 
-export async function streamPlan({ endpoint, model, messages, signal, onText, contextTokens, onMetrics }) {
+export async function streamPlan({ endpoint, model, mode, messages, signal, onText, contextTokens, onMetrics }) {
   const history = messages
     .filter(message => ["user", "assistant"].includes(message.role) && message.text)
     .map(message => ({ role: message.role, content: message.text }));
@@ -14,7 +14,8 @@ export async function streamPlan({ endpoint, model, messages, signal, onText, co
       model,
       stream: true,
       ...(contextTokens ? {options:{num_ctx:contextTokens}} : {}),
-      messages: [{ role: "system", content: instruction }, ...history]
+      messages: [{ role: "system", content: mode==="ask"?
+        "Answer the question directly using the chat context. You cannot access workspace files, use tools or modify anything. Be clear about any evidence you lack.":instruction }, ...history]
     }),
     signal
   });

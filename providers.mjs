@@ -42,9 +42,9 @@ function dpapi(method, bytes) {
   return Buffer.from(result.stdout, "base64");
 }
 
-export function credentialStore(folder) {
+export function credentialStore(folder, allowed = id => !!providerFor(id)) {
   function filename(id) {
-    if (!providerFor(id)) throw new Error("Unknown provider");
+    if (!allowed(id)) throw new Error("Unknown credential service");
     return path.join(folder, id + ".dpapi");
   }
   return {

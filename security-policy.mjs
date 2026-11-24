@@ -177,7 +177,15 @@ export function ordinaryDevelopmentCommand(input, workspace, protectedPath=()=>f
   if(args.some(value=>/^(?:install|ci|add|download|publish|deploy|--install|--prefix|-enc(?:odedcommand)?|-e|-c|-r|-jar)$/i.test(value))&&
       !(["python","py"].includes(executable)&&args[0]==="-m"&&args[1]==="zipfile")&&
       !(["gcc","g++","clang","clang++"].includes(executable)&&args.includes("-c")))return false;
-  if(["python","py"].includes(executable)&&args[0]==="-m"&&!["py_compile","compileall","unittest","pytest","zipfile","tkinter"].includes(args[1]))return false;
+  if(["python","py"].includes(executable)&&args[0]==="-m"&&!["py_compile","compileall","unittest","pytest","zipfile","tkinter"].includes(args[1])){
+    if(!/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){1,6}$/.test(args[1]||""))return false;
+    try{
+      const root=fs.realpathSync(workspace);
+      const file=path.join(root,...args[1].split("."))+".py";
+      const stat=fs.lstatSync(file);
+      if(!stat.isFile()||stat.nlink!==1||path.relative(file,fs.realpathSync(file))||protectedPath(file)||sensitivePath(file))return false;
+    }catch{return false}
+  }
   return args.every(value=>{
     if(/[:=@]/.test(value)||path.isAbsolute(value)||value.split(/[\\/]/).includes("..")||sensitivePath(value))return false;
     if(value.startsWith("-"))return !/[\\/]/.test(value);

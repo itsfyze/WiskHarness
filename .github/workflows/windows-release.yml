@@ -36,6 +36,8 @@ jobs:
         run: ./desktop/check-release-source.ps1
       - name: Test and build Windows packages
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           npm ci
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
@@ -44,6 +46,9 @@ jobs:
           npm test
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           npm run build:win -- --publish never
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:LOCAL_AGENT_VIBE_RESOURCES = (Resolve-Path (Join-Path (Join-Path release $env:RELEASE_TAG) 'win-unpacked/resources')).Path
+          node --test tests/vibe-contract.test.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Publish and verify public downloads
         shell: pwsh

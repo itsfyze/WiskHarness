@@ -6,9 +6,14 @@ $stageItem = Get-Item -LiteralPath $stage -Force
 if ($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Runtime staging cannot be a reparse point" }
 Copy-Item (Join-Path $root "package.json") (Join-Path $stage "package.json") -Force
 Copy-Item (Join-Path $root "package-lock.json") (Join-Path $stage "package-lock.json") -Force
+Copy-Item (Join-Path $root "THIRD-PARTY-NOTICES.md") (Join-Path $stage "THIRD-PARTY-NOTICES.md") -Force
 Copy-Item (Join-Path $root "server.mjs") (Join-Path $stage "server.mjs") -Force
 Copy-Item (Join-Path $root "agent-ollama.mjs") (Join-Path $stage "agent-ollama.mjs") -Force
 Copy-Item (Join-Path $root "agent-tools.mjs") (Join-Path $stage "agent-tools.mjs") -Force
+foreach ($file in @('vibe-runtime.mjs', 'vibe-ollama.mjs', 'agent-vibe-mcp.mjs', 'mcp-manager.mjs')) {
+    Copy-Item (Join-Path $root $file) (Join-Path $stage $file) -Force
+}
+& (Join-Path $PSScriptRoot "stage-vibe.ps1") -Destination $stage
 Copy-Item (Join-Path $root "goose-runtime.mjs") (Join-Path $stage "goose-runtime.mjs") -Force
 Copy-Item (Join-Path $root "agent-web.mjs") (Join-Path $stage "agent-web.mjs") -Force
 Copy-Item (Join-Path $root "agent-web-mcp.mjs") (Join-Path $stage "agent-web-mcp.mjs") -Force

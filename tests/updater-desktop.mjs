@@ -23,8 +23,10 @@ const target = path.join(kind === "setup" ? setupDir : root, "WiskHarness.exe");
 const status = path.join(profile, "update-result.txt");
 const log = path.join(profile, "desktop-runtime.log");
 const publicFeed=process.argv.includes("--public-feed");
-const version=publicFeed?"0.7.3-beta.7":"0.7.3-beta.6";
-const previousVersion=publicFeed?"0.7.3-beta.6":"0.7.3-beta.5";
+const option=name=>process.argv.find(arg=>arg.startsWith("--"+name+"="))?.split("=")[1];
+const portableBaseline=option("portable-unpacked");
+const version=option("to")||(publicFeed?"0.7.3-beta.7":"0.7.3-beta.6");
+const previousVersion=option("from")||(publicFeed?"0.7.3-beta.6":"0.7.3-beta.5");
 assert(!publicFeed||kind==="portable","The public-feed test uses the production Portable packages.");
 const filename = "WiskHarness." + (kind === "setup" ? "Setup" : "Portable") + "." + version + ".exe";
 const candidate = path.resolve(newer);
@@ -69,7 +71,7 @@ async function serve(req, res) {
   if (req.url === "/feed") {
     res.setHeader("Content-Type", "application/json");
     return res.end(JSON.stringify([{
-      tag_name:"v" + version, draft:false, prerelease:true, body:"Updater QA release notes.",
+      tag_name:"v" + version, draft:false, prerelease:version.includes("-"), body:"Updater QA release notes.",
       assets:[{name:filename, state:"uploaded", size, digest:"sha256:" + digest,
         browser_download_url:"https://github.com/itsfyze/WiskHarness/releases/download/v" + version + "/" + filename}]
     }]));
@@ -115,7 +117,8 @@ try {
   const env = {...process.env,WISK_UPDATE_TEST_FEED:"http://127.0.0.1:"+feed.address().port,
     LOCAL_AGENT_SETTINGS_DIR:config,LOCAL_AGENT_WORKSPACE:workspace,LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT:"1",
     LOCAL_AGENT_PORT:String(servicePort)};
-  launcher = spawn(target, ["--user-data-dir="+profile,"--remote-debugging-port="+debugPort],
+  if(portableBaseline)env.PORTABLE_EXECUTABLE_FILE=target;
+  launcher = spawn(portableBaseline?path.resolve(portableBaseline):target, ["--user-data-dir="+profile,"--remote-debugging-port="+debugPort],
     {env,windowsHide:true,stdio:"ignore"});
   const endpoint = "http://127.0.0.1:" + debugPort;
   await waitFor(async() => {
@@ -149,7 +152,7 @@ try {
   assert.equal(launcher.exitCode,null);
   assert.equal(await sha256(target),previousHash);
   assert.equal((await fs.readdir(path.join(config,"updates"))).length,0);
-  console.log(kind + ": detected beta.6 and rejected a bad download without closing or changing the app.");
+  console.log(kind + ": detected "+version+" and rejected a bad download without closing or changing the app.");
 
   await card.getByRole("button",{name:"Retry update"}).click();
   await card.locator('progress[value]:not([value="0"])').waitFor();

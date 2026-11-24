@@ -52,14 +52,16 @@ async function searchSource(directory,query,{signal,secretProtection,protectedPa
   return {matches,inspected,skipped,truncated:matches.length>=60||inspected>=600||entries>=2500};
 }
 
-function commandResult({shell,command,workspace,signal,redact,env}) {
+function commandResult({shell,command,workspace,signal,redact,env,onCommandUpdate}) {
   signal.throwIfAborted();
   return new Promise(resolve=>{
     const stop=()=>void operation.stop().then(terminated=>{
       if (!terminated) resolve({ok:false,error:"Windows could not confirm termination of the command process tree.",state:"termination unconfirmed"});
     });
     const script=shell==="powershell"?"$ErrorActionPreference = 'Stop'\n"+command+"\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }":command;
+    let reported=0;
     const operation=startTerminal({shell,command:script,workspace,redact,env,timeoutMs:120_000,update(run) {
+      if(run.state!=="running"||performance.now()-reported>=350){onCommandUpdate?.({...run,command:redact(command)});reported=performance.now()}
       if (run.state==="running"&&!run.error?.includes("did not confirm")) return;
       signal.removeEventListener("abort",stop);
       const output=stream=>run.chunks.filter(chunk=>chunk.stream===stream).map(chunk=>chunk.text).join("");
@@ -70,7 +72,7 @@ function commandResult({shell,command,workspace,signal,redact,env}) {
   });
 }
 
-export function createAgentTools({workspace,signal,secretProtection,redact,env,internet,protectedPath,authorize,report}) {
+export function createAgentTools({workspace,signal,secretProtection,redact,env,internet,protectedPath,authorize,report,onCommandUpdate}) {
   const registry = new Map();
   function add(name,kind,description,shape,handler) {
     registry.set(name,{kind,description,schema:z.strictObject(shape),handler});
@@ -118,7 +120,7 @@ export function createAgentTools({workspace,signal,secretProtection,redact,env,i
   add("run_command","execute","Execute a foreground PowerShell or CMD command in the workspace. Use for tests, builds, git status/diff or process inspection. Returns exit code, stdout and stderr.",{
     shell:z.enum(["powershell","cmd"]),command:shellCommand
   },async args=>{
-    const result=await commandResult({...args,workspace,signal,redact,env});
+    const result=await commandResult({...args,workspace,signal,redact,env,onCommandUpdate});
     if(!result.ok||!/compress-archive|zipfile|\b(?:package|pack|tar|zip)\b|pyinstaller|electron-builder/i.test(args.command))return result;
     const candidates=(args.command+" "+result.stdout).match(/"[^"]+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)"|'[^']+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)'|[^\s"'=:]+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)\b/gi)||[];
     const root=await fs.realpath(workspace);
@@ -134,7 +136,7 @@ export function createAgentTools({workspace,signal,secretProtection,redact,env,i
     return {...result,artifacts};
   });
   if (internet) {
-    const web=createAgentWeb({endpoint:internet.endpoint});
+    const web=createAgentWeb({endpoint:internet.endpoint,braveKey:internet.braveKey});
     add("search_web","other","Search public sources. Use only public keywords and cite returned source URLs.",{
       query:z.string().min(1).max(300),source:z.enum(["auto","technical","encyclopedia","web"]).optional()
     },async({query,source="auto"})=>({text:await web.searchWeb(query,source,signal)}));

@@ -12,12 +12,12 @@ export function validateBudget(input = {}) {
   }));
 }
 
-export function cleanAgentText(value) {
-  return redactSecrets(String(value))
+export function cleanAgentText(value,{trim=true}={}) {
+  const cleaned=redactSecrets(String(value))
     .replace(/<(turn-context|current-time|working-directory|turn-budget|think|tool_call|tool_result|tool_response|function_call)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi,"")
     .replace(/<\/?(?:turn-context|current-time|working-directory|turn-budget|think|tool_call|tool_result|tool_response|function_call)\b[^>]*(?:>|$)/gi,"")
-    .replace(/<\|(?:im_start|im_end|eot_id|start_header_id|end_header_id|python_tag)\|>/gi,"")
-    .trim();
+    .replace(/<\|(?:im_start|im_end|eot_id|start_header_id|end_header_id|python_tag)\|>/gi,"");
+  return trim?cleaned.trim():cleaned;
 }
 
 export function modelCapabilities(info) {
@@ -82,6 +82,28 @@ const completion = {
   }
 };
 
+const executionRequest=/^(?:please\s+)?(?:create|build|implement|fix|repair|edit|write|run|test|add|set up|make|develop|compile|refactor|inspect|verify)\b/i;
+export const requestsExecution = prompt => executionRequest.test(prompt.trim());
+export function taskChecklist(prompt,previous=[]) {
+  const requirements=[
+    ["source","Implement source files",/\b(?:implement|source code|source files|programming project|functional GUI)\b/i],
+    ["build","Compile or build the project",/\b(?:compil\w*|py_compile)\b/i],
+    ["test","Run automated tests",/\b(?:automated tests|unit tests|unittest|pytest|run tests)\b/i],
+    ["package","Produce the requested package",/\b(?:packag(?:e|es|ing)|distribution artifact|zip archive)\b/i]
+  ];
+  return requirements.filter(([, ,pattern])=>pattern.test(prompt)).map(([id,label])=>({
+    id,label,evidence:previous.find(item=>item.id===id)?.evidence||null
+  }));
+}
+
+export function commandObjectives(command) {
+  return {
+    build:!/\b(?:--version|-version)\b|^(?:get-|where|test-path)/i.test(command)&&/py_compile|(?:^|\s)(?:g\+\+|clang\+\+)(?:\.exe)?(?:\s|$)|\b(?:compile|build|javac|csc|ninja|gcc|clang)\b/i.test(command),
+    test:!/^(?:get-|where|test-path)/i.test(command)&&/\b(?:unittest|pytest|tests?|ctest)\b/i.test(command.replace(/\b(?:app|test|tests)[\\/]\S+/g,"")),
+    package:/compress-archive|zipfile|\b(?:package|pack|tar|zip)\b|pyinstaller|electron-builder/i.test(command)
+  };
+}
+
 export async function runOllamaAgent({endpoint, model, capabilities, contextTokens, budget, history, prompt, instructions, tools, signal, onMetrics, onText, onStatus, execute, checkpoint, onCheckpoint=()=>{}}) {
   const context = Math.min(contextTokens || capabilities.modelContext || defaultBudget.context, budget.context || defaultBudget.context, capabilities.trainedContext || Infinity);
   const allowance = Math.max(3500,(context - Math.min(8192, Math.floor(context/3))) * 2);
@@ -106,7 +128,7 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
     return "tools_unsupported";
   }
   const catalog = [...tools, completion];
-  const needsExecution=/^(?:please\s+)?(?:create|build|implement|fix|repair|edit|write|run|test|add|set up|make|develop|compile|refactor|inspect|verify)\b/i.test(prompt.trim());
+  const needsExecution=requestsExecution(prompt);
   const groups = [];
   const structuredGroups = [];
   const format = {type:"object",additionalProperties:false,required:["name","arguments"],properties:{
@@ -117,26 +139,14 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
   let compatible = !capabilities.tools || checkpoint?.protocol==="json";
   if (compatible) onStatus("Using Ollama structured JSON compatibility mode for this model.");
   const seen = new Map();
-  const requirements=[
-    ["source","Implement source files",/\b(?:implement|source code|source files|programming project|functional GUI)\b/i],
-    ["build","Compile or build the project",/\b(?:compil\w*|py_compile)\b/i],
-    ["test","Run automated tests",/\b(?:automated tests|unit tests|unittest|pytest|run tests)\b/i],
-    ["package","Produce the requested package",/\b(?:packag(?:e|es|ing)|distribution artifact|zip archive)\b/i]
-  ];
-  const checklist=requirements.filter(([, ,pattern])=>pattern.test(prompt)).map(([id,label])=>({
-    id,label,evidence:checkpoint?.checklist?.find(item=>item.id===id)?.evidence||null
-  }));
+  const checklist=taskChecklist(prompt,checkpoint?.checklist);
   const outstanding=()=>checklist.filter(item=>!item.evidence);
   let lastProgress=checkpoint?.lastProgress||null, correction="", recovery=0, compacted=0;
   let lastFailure="", lastFailureSignature=null;
   const started=performance.now();
   const pendingReadbacks=new Set();
   const recoveryLimit=budget.recovery||defaultBudget.recovery;
-  const commandObjectives=command=>({
-    build:!/\b(?:--version|-version)\b|^(?:get-|where|test-path)/i.test(command)&&/py_compile|(?:^|\s)(?:g\+\+|clang\+\+)(?:\.exe)?(?:\s|$)|\b(?:compile|build|javac|csc|ninja|gcc|clang)\b/i.test(command),
-    test:!/^(?:get-|where|test-path)/i.test(command)&&/\b(?:unittest|pytest|tests?|ctest)\b/i.test(command.replace(/\b(?:app|test|tests)[\\/]\S+/g,"")),
-    package:/compress-archive|zipfile|\b(?:package|pack|tar|zip)\b|pyinstaller|electron-builder/i.test(command)
-  });
+
   const actionKey=(name,input)=>JSON.stringify([name,Object.entries(input??{}).sort(([a],[b])=>a.localeCompare(b))]);
   let blockedReason=null;
   const publish=(round,calls,stop,tokens)=>onCheckpoint({checklist,lastProgress,rounds:round,calls,

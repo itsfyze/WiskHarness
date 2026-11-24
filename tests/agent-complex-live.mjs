@@ -10,7 +10,7 @@ import {setTimeout as sleep} from "node:timers/promises";
 const workspaceBase=await fs.mkdtemp(path.join(os.tmpdir(),"Wisk live agent "));
 const config=path.join(workspaceBase,"profile");
 await fs.mkdir(config);
-await fs.writeFile(path.join(config,"settings.json"),JSON.stringify({permissionMode:"full",agentBudget:{rounds:65,minutes:18,recovery:10},updateAutomatic:false}));
+await fs.writeFile(path.join(config,"settings.json"),JSON.stringify({permissionMode:"full",agentEngine:process.env.WISK_VALIDATION_ENGINE||"ollama",agentBudget:{rounds:65,minutes:18,recovery:10},updateAutomatic:false}));
 const listener=createServer().listen(0,"127.0.0.1");
 await once(listener,"listening");
 const port=listener.address().port;
@@ -26,14 +26,14 @@ const api=async(route,body)=>{
   if (!response.ok) throw new Error(route+" "+response.status+" "+await response.text());
   return response;
 };
-const cases=[["GUI","huihui_ai/qwen2.5-coder-abliterate:14b",
-  "Implement a benign offline task tracker with Python tkinter. First diagnose unavailable CMake by running cmake --version, then Get-Command cmake or where.exe cmake. Use Python already on PATH as the alternative build tool. First create six folders: app, tests, config, docs, assets, and dist. Write app/model.py with add_task(tasks, title) and toggle_task(tasks, index), app/gui.py with a main() function that opens a functional tkinter window, entry, add button and toggling, config/settings.json with a title, and tests/test_model.py covering adding and toggling. Keep the GUI code simple. Avoid f-strings and nested quote expressions. For this recovery test create app/model.py with a deliberately missing colon in a function definition. Attempt python -m py_compile app/missing.py to get an incorrect-path error and then python -m py_compile app/model.py to get the syntax error. Read the source, use edit_file to add the missing colon, and rerun the compile. Include a README with usage using python -m app.gui. After writing all sources and tests, compile both application modules using python -m py_compile app/model.py app/gui.py, run automated tests with python -m unittest discover -s tests -v, and package the application into dist/task-tracker.zip using python -m zipfile -c dist/task-tracker.zip app config README.md. Verify the archive using python -m zipfile -t dist/task-tracker.zip. Use only the current folder, the standard library, and no network or installs. Finish only after source, compilation, tests, and archive are verified.",
+const cases=[["GUI",process.env.WISK_VALIDATION_MODEL||"huihui_ai/qwen2.5-coder-abliterate:14b",
+  "Implement a benign offline task tracker with Python tkinter. First diagnose unavailable CMake by running cmake --version, then Get-Command cmake or where.exe cmake. Use Python already on PATH as the alternative build tool. First create six folders: app, tests, config, docs, assets, and dist. Write app/model.py with add_task(tasks, title) and toggle_task(tasks, index), app/gui.py with a main() function that opens a functional tkinter window, entry, add button and toggling, config/settings.json with a title, and tests/test_model.py covering adding and toggling. Import the model with from app.model import add_task, toggle_task because the GUI runs as a module. Keep the GUI code simple. Avoid f-strings and nested quote expressions. For this recovery test create app/model.py with a deliberately missing colon in a function definition. Before creating any such file, run python -m py_compile app/missing.py to observe the controlled incorrect-path error. Never create app/missing.py. Then proceed and then python -m py_compile app/model.py to get the syntax error. Read the source, use edit_file to add the missing colon, and rerun the compile. Include a README with usage using python -m app.gui. After writing all sources and tests, compile both application modules using python -m py_compile app/model.py app/gui.py, run automated tests with python -m unittest discover -s tests -v, and package the application into dist/task-tracker.zip using python -m zipfile -c dist/task-tracker.zip app config README.md. Verify the archive using python -m zipfile -t dist/task-tracker.zip. To verify GUI startup, make gui.main() honor a --smoke flag by scheduling root.destroy after 200 ms. Run python -m app.gui --smoke to check it before completing. Use only the current folder, the standard library, and no network or installs. Finish only after source, compilation, tests, and archive are verified.",
   async(folder,tools)=>{
     for(const file of ["app/model.py","app/gui.py","config/settings.json","tests/test_model.py","dist/task-tracker.zip"])
       assert((await fs.stat(path.join(folder,file))).size>0,file);
     for(const failure of [/cmake --version/,/app\/missing\.py/,/SyntaxError/])
       assert(tools.some(tool=>tool.status==="failed"&&failure.test(tool.input+" "+tool.output)),String(failure));
-    for(const command of [/py_compile/,/unittest/,/zipfile.*-c/,/zipfile.*-t/])
+    for(const command of [/py_compile/,/unittest/,/zipfile.*-c/,/zipfile.*-t/,/app\.gui --smoke/])
       assert(tools.some(tool=>tool.status==="completed"&&tool.title==="run_command"&&command.test(tool.input)),String(command));
     const test=spawn("python",["-m","unittest","discover","-s","tests","-v"],{cwd:folder,windowsHide:true});
     assert.equal((await once(test,"close"))[0],0);
@@ -52,8 +52,15 @@ try{
       await fs.mkdir(folder);
       const modelInfo=await (await api("/api/agent/model?name="+encodeURIComponent(model))).json();
       assert(modelInfo.tools);
+      if(process.env.WISK_VALIDATION_ENGINE==="vibe"){
+        await fs.mkdir(path.join(folder,"fixtures"));
+        await fs.writeFile(path.join(folder,"fixtures","broken_syntax.py"),"def probe()\n    return 1\n");
+      }
       const {session}=await (await api("/api/sessions",{workspace:folder,mode:"agent",model})).json();
-      const stream=await api("/api/sessions/"+session.id+"/run",{prompt});
+      const request=process.env.WISK_VALIDATION_ENGINE==="vibe"?
+        "Run one plain command per call. The tool already captures stdout and stderr. Do not use redirection, pipes, command chains or dependency installs. When verification passes, summarize and finish. First, the test harness left a file named fixtures/broken_syntax.py containing a deliberate Python syntax error. Run python -m py_compile fixtures/broken_syntax.py to see the error. Fix it with edit_file and rerun the same check. Then perform the following task. Write app/model.py with correct syntax because the dedicated fixture already tests compilation recovery.\n\n"+
+        prompt.replace(/For this recovery test create app\/model\.py with a deliberately missing colon in a function definition\. /,"").replace(/ Then proceed and then python -m py_compile app\/model\.py to get the syntax error\. Read the source, use edit_file to add the missing colon, and rerun the compile\./,".") : prompt;
+      const stream=await api("/api/sessions/"+session.id+"/run",{prompt:request});
       const decoder=new TextDecoder();
       let buffer="",done;
       for await(const bytes of stream.body){

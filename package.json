@@ -1,18 +1,18 @@
 {
   "name": "wiskharness",
   "private": true,
-  "version": "0.7.3-beta.7",
+  "version": "0.7.3",
   "type": "module",
   "main": "desktop/electron-main.cjs",
   "description": "Self-hosted Windows coding assistant with local and cloud Plan models",
   "author": "WiskHarness",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check agent-ollama.mjs && node --check agent-tools.mjs && node --check goose-runtime.mjs && node --check agent-web.mjs && node --check agent-web-mcp.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
+    "check": "node --check server.mjs && node --check agent-ollama.mjs && node --check agent-tools.mjs && node --check goose-runtime.mjs && node --check vibe-runtime.mjs && node --check vibe-ollama.mjs && node --check agent-vibe-mcp.mjs && node --check mcp-manager.mjs && node --check agent-web.mjs && node --check agent-web-mcp.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
     "desktop": "electron .",
     "stage:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/stage-runtime.ps1",
-    "build:win": "npm run stage:runtime && electron-builder --win portable nsis --x64",
-    "build:portable": "npm run stage:runtime && electron-builder --win portable --x64",
+    "build:win": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/build-windows.ps1",
+    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/build-windows.ps1 -PortableOnly",
     "finish:release": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/finish-release.ps1",
     "test": "node --test tests/*.test.mjs"
   },
@@ -52,10 +52,15 @@
         "to": "runtime",
         "filter": [
           "package.json",
+          "THIRD-PARTY-NOTICES.md",
           "server.mjs",
           "agent-ollama.mjs",
           "agent-tools.mjs",
           "goose-runtime.mjs",
+          "vibe-runtime.mjs",
+          "vibe-ollama.mjs",
+          "agent-vibe-mcp.mjs",
+          "mcp-manager.mjs",
           "agent-web.mjs",
           "agent-web-mcp.mjs",
           "security-policy.mjs",
@@ -77,6 +82,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "runtime-staging/vibe-acp-windows-x86_64-3.1.5.zip",
+        "to": "vibe-acp-windows-x86_64-3.1.5.zip"
       },
       {
         "from": "runtime-staging/WiskHarness Update.exe",

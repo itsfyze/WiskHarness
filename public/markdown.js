@@ -28,12 +28,30 @@ async function copy(text){
   try{return document.execCommand("copy")}
   finally{field.remove();previous?.focus({preventScroll:true})}
 }
-export function renderMarkdown(element,text,{streaming=false}={}){
+export function highlightedLine(value,language){
+  if(!language||value.length>440||!highlight.getLanguage(language))return null;
+  const syntax=highlight.highlight(value,{language,ignoreIllegals:true}).value;
+  return DOMPurify.sanitize(syntax,{ALLOWED_TAGS:["span"],ALLOWED_ATTR:["class"]});
+}
+
+export function renderMarkdown(element,text,{streaming=false,onFile}={}){
   const source=String(text??"");
   if(!source){element.replaceChildren();return}
-  const fragment=DOMPurify.sanitize(markdown.parse(source),allowed);
+  const localFile=/^(?:\.\/)?[a-z0-9_][a-z0-9_./% -]{0,800}\.[a-z0-9]{1,12}$/i;
+  const fragment=DOMPurify.sanitize(markdown.parse(source),onFile?
+    {...allowed,ALLOWED_URI_REGEXP:/^(?:https?:\/\/|(?:\.\/)?[a-z0-9_][a-z0-9_./% -]{0,800}\.[a-z0-9]{1,12}$)/i}:allowed);
   for(const link of fragment.querySelectorAll("a[href]")){
-    const url=URL.parse(link.getAttribute("href"));
+    const href=link.getAttribute("href");
+    if(onFile&&localFile.test(href)){
+      let selected;
+      try{selected=decodeURIComponent(href);}catch{selected=null;}
+      if(selected&&localFile.test(selected)&&!selected.split("/").includes("..")){
+        const button=document.createElement("button");
+        button.type="button";button.className="inline-file";button.textContent=link.textContent;
+        button.onclick=()=>onFile(selected);link.replaceWith(button);continue;
+      }
+    }
+    const url=URL.parse(href);
     if(!url||url.username||url.password){link.removeAttribute("href");continue}
     link.target="_blank";
     link.rel="noopener noreferrer";

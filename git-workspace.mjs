@@ -53,6 +53,10 @@ export async function workspaceGit(exe, workspace, action = "status", input = {}
     return {commit:(await git(["rev-parse","--short","HEAD"])).trim()};
   }
 
+  if (action === "branch") {
+    const branch=(await git(["rev-parse","--abbrev-ref","HEAD"]).catch(()=>git(["symbolic-ref","--short","HEAD"]))).trim();
+    return {repository:true,branch};
+  }
   if (action === "status") {
     const output = (await git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"])).split("\0");
     const files = output.filter(Boolean).map(entry => ({ state: entry.slice(0, 2), name: entry.slice(3) }))

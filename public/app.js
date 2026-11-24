@@ -1,4 +1,4 @@
-import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountCompatibility, showGitWorkspace, gooseRuntimeLabel, mountInternet } from "./workbench.js";
+import { showSetup, mountSettings, notifyUpdate, mountModelDiagnostics, mountAgentTools, mountDevelopment, mountMcpPage, mountCompatibility, showGitWorkspace, gooseRuntimeLabel, mountInternet } from "./workbench.js";
 import {bindPopovers, closePopover, openPopover, refreshPopover} from "./popover.js";
 import {renderMarkdown} from "./markdown.js";
 import {mountPerformance} from "./performance.js";
@@ -6,8 +6,10 @@ import {mountPermissions,showCheckpoint} from "./chat-controls.js";
 
 const $=s=>document.querySelector(s),$$=s=>Array.from(document.querySelectorAll(s));
 const esc=x=>String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const TKEY="local-agent-ui-theme-v4",MKEY="local-agent-motion-v4",SKEY="local-agent-selected-session";
+const TKEY="local-agent-ui-theme-v4",MKEY="local-agent-motion-v4",SKEY="local-agent-selected-session",AKEY="wisk-theme-accents";
 const THEMES=[
+["ink","Ink","Neutral dark","#171719","#1d1d20","#27272b","#b9c7df"],
+["paper","Paper","Neutral light","#faf9f6","#f1f0ec","#e7e5df","#315b8a"],
 ["graphite","Graphite","Cool charcoal","#111217","#17181f","#242630","#a9bcff"],
 ["midnight","Midnight","Deep navy","#09101c","#101a2a","#21304a","#99baff"],
 ["oled","OLED Black","High contrast","#050507","#0c0c10","#1d1d24","#c3b5ff"],
@@ -20,10 +22,16 @@ const state={view:"chats",sessions:[],session:null,modelData:null,health:null,pr
 const MODE_KEY="local-agent-mode";
 const chevron='<svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 const pendingVisibility=new Set();
-const modeNames={plan:"Plan",agent:"Agent"};
-const modeDescriptions={plan:"Chat, brainstorm, and plan",agent:"Code, execute, and build"};
+const modeNames={agent:"Agent",plan:"Plan",ask:"Ask"};
+const modeDescriptions={plan:"Develop a plan without editing",agent:"Implement, run and verify",ask:"Answer without editing"};
 const modeIcon=mode=>'<svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true">'+(mode==="plan"?'<path d="M5 4h14v13H9l-4 4zM9 8h6m-6 4h6"/>':'<path d="m5 7 5 5-5 5m8 0h6"/>')+'</svg>';
-const currentMode=()=>state.session?.mode||(localStorage.getItem(MODE_KEY)==="agent"?"agent":"plan");
+const currentMode=()=>state.session?.mode||(Object.hasOwn(modeNames,localStorage.getItem(MODE_KEY))?localStorage.getItem(MODE_KEY):"agent");
+const runtimeName=()=>{
+  const mode=currentMode();
+  if(mode==="ask"||mode==="plan"&&(parseProviderModel(selectedModel())||state.health?.agentEngine!=="vibe"))return "Chat";
+  return state.health?.agentEngine==="vibe"?"Mistral Vibe":state.health?.agentEngine==="goose"?"Goose ACP":"Ollama Agent";
+};
+const parseProviderModel=value=>typeof value==="string"&&value.startsWith("@provider/");
 const selectedModel=()=>state.view==="chats"?(state.session?.model||state.draftModel||state.providerData?.modeDefaults?.[currentMode()]||state.modelData?.selected):state.modelData?.selected;
 function modelIdentity(value){
   const match=/^@provider\/([^/]+)\/(.+)$/.exec(value||"");
@@ -31,10 +39,31 @@ function modelIdentity(value){
   const info=state.providerData?.providers.find(provider=>provider.id===match[1]);
   return {label:match[2],provider:info?.name||match[1],cloud:!["lmstudio","compatible"].includes(match[1])};
 }
-const hasModelSource=()=>!!state.modelData||currentMode()==="plan"&&!!state.providerData;
+const hasModelSource=()=>!!state.modelData||currentMode()!=="agent"&&!!state.providerData;
 const runInView=()=>!!state.session&&state.session.id===(state.activeRun?.sessionId||state.health?.activeSessionId);
 const drafts=new Map();
 const draftKey=()=>state.session?.id||currentMode();
+function resizePanel(handle,layout,variable,key,defaultValue,min,max,direction){
+  const read=()=>Number(localStorage.getItem(key))||defaultValue;
+  const set=value=>{
+    const width=Math.max(min,Math.min(value,max));
+    layout.style.setProperty(variable,width+"px");
+    handle.setAttribute("aria-valuenow",String(width));
+    localStorage.setItem(key,String(width));
+  };
+  handle.setAttribute("aria-valuemin",String(min));handle.setAttribute("aria-valuemax",String(max));
+  set(read());
+  handle.onkeydown=event=>{
+    if(!["ArrowLeft","ArrowRight"].includes(event.key))return;
+    event.preventDefault();set(read()+direction*(event.key==="ArrowLeft"?-20:20));
+  };
+  handle.onpointerdown=event=>{
+    handle.setPointerCapture(event.pointerId);
+    const start=event.clientX,width=read();
+    handle.onpointermove=move=>set(width+direction*(move.clientX-start));
+    handle.onlostpointercapture=()=>{handle.onpointermove=null};
+  };
+}
 function rememberDraft(){
   const input=$("#chat-input");
   if(input)drafts.set(draftKey(),input.value);
@@ -71,9 +100,23 @@ async function api(endpoint,options={}){
 const post=(url,data)=>api(url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(data)});
 const patch=(url,data)=>api(url,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify(data)});
 const shortPath=p=>String(p||"").replace(/[\\/]$/,"").split(/[\\/]/).pop()||String(p||"");
+function customAccents(){
+  try{return JSON.parse(localStorage.getItem(AKEY)||"{}")||{};}catch{return {};}
+}
 function applyTheme(){
   const theme=THEMES.find(x=>x[0]===localStorage.getItem(TKEY))||THEMES[0];
   document.body.dataset.theme=theme[0];document.body.dataset.motion=localStorage.getItem(MKEY)==="off"?"off":"on";
+  const value=customAccents()[theme[0]];
+  const accent=/^#[a-f0-9]{6}$/i.test(value||"")?value:null;
+  for(const name of ["--accent","--accent-ink","--soft"])document.body.style.removeProperty(name);
+  if(accent){
+    const components=accent.slice(1).match(/../g).map(hex=>parseInt(hex,16)/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4);
+    const luminance=.2126*components[0]+.7152*components[1]+.0722*components[2];
+    document.body.style.setProperty("--accent",accent);
+    document.body.style.setProperty("--accent-ink",luminance>.179?"#161616":"#ffffff");
+    document.body.style.setProperty("--soft",accent+"24");
+  }
+  const color=$("#theme-accent");if(color)color.value=accent||theme[6];
   $("#theme-label").textContent=theme[1];
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content",theme[3]);
   $$(".theme-tile").forEach(b=>{b.classList.toggle("selected",b.dataset.theme===theme[0]);b.setAttribute("aria-pressed",String(b.dataset.theme===theme[0]))});
@@ -82,11 +125,13 @@ function applyTheme(){
 function setTheme(id){if(THEMES.some(t=>t[0]===id)){localStorage.setItem(TKEY,id);applyTheme()}}
 function renderTop(){
   const home=state.view==="chats"&&!state.session?.messages?.length;
+  if(state.view!=="chats")$("#development-toggle").hidden=true;
   $(".main").classList.toggle("show-home",home);
-  $("#view-title").textContent=home?"New chat":state.view[0].toUpperCase()+state.view.slice(1);
+  $("#view-title").textContent=home?"New chat":state.view==="chats"?state.session.title:state.view==="mcp"?"MCP":state.view[0].toUpperCase()+state.view.slice(1);
   $("#view-context").textContent=state.view==="chats"
     ? home?shortPath(state.session?.workspace||state.draftWorkspace||state.health?.preflight?.workspace||"Workspace"):shortPath(state.session.workspace)
     : shortPath(state.health?.preflight?.workspace||"Local workspace");
+  if(state.view==="chats"&&state.session?.branch)$("#view-context").textContent+=" · "+state.session.branch;
   const mode=currentMode();
   $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong>'+chevron;
   const model=modelIdentity(selectedModel());
@@ -94,15 +139,15 @@ function renderTop(){
   $("#model-trigger").title=$("#model-label").textContent;
   $("#model-trigger").setAttribute("aria-label",model.label?"Choose model, current model "+model.label:"Choose model");
   const legacy=state.health?.agentEngine==="goose";
-  const ok=!!(state.health?.ollama&&(mode==="plan"||!legacy||state.health?.goose));
+  const ok=!!(state.health?.ollama&&(mode!=="agent"||!legacy||state.health?.goose));
   $("#connection-dot").classList.toggle("online",ok);$("#connection-text").textContent=ok?"Local runtime online":"Runtime unavailable";
   $("#top-connection").textContent=state.busy?"Running":model.cloud?"Cloud · "+model.provider:model.provider!=="Ollama"?"Local · "+model.provider:state.health?.ollama?"Ollama connected":"Ollama offline";
-  $("#runtime-label").textContent=mode==="plan"?model.provider:legacy?"Goose ACP · Ollama":"Ollama Agent";
+  $("#runtime-label").textContent=runtimeName()+" · "+model.provider;
   $("#top-connection").classList.toggle("online",ok);
   $("#model-trigger").disabled=!hasModelSource()||state.busy;
 }
 function changeView(view){
-  if(!["chats","agents","projects","models","settings"].includes(view))return;
+  if(!["chats","agents","projects","models","mcp","settings"].includes(view))return;
   closePopover();state.view=view;
   $$(".nav-item").forEach(b=>{b.classList.toggle("active",b.dataset.view===view);b.setAttribute("aria-current",b.dataset.view===view?"page":"false")});
   $(".sidebar").classList.remove("open");
@@ -114,12 +159,28 @@ function render(){
   else if(state.view==="projects")renderProjects();
   else if(state.view==="models")renderModels();
   else if(state.view==="settings")renderSettings();
+  else if(state.view==="mcp"){
+    $("#content").innerHTML='<div class="content-scroll"><div id="mcp-page" class="page-width"></div></div>';
+    void mountMcpPage($("#mcp-page"));
+  }
 }
 function renderSidebar(){
   const query=$("#session-search").value.toLowerCase().trim();
   $("#session-count").textContent=state.sessions.length;
   const data=query?(state.searchQuery===query?state.searchResults:state.sessions.filter(s=>(s.title+" "+(s.preview||"")).toLowerCase().includes(query))):state.sessions;
-  $("#session-list").innerHTML=data.length?data.map(s=>'<div class="session-row '+(state.session?.id===s.id?"active":"")+'" data-session="'+esc(s.id)+'"><button class="session-button" data-action="open" title="'+esc(s.title)+'"><span class="session-title">'+esc(s.title)+'</span><span class="session-meta">'+modeNames[s.mode||"agent"]+' · '+(s.messageCount||0)+' messages</span></button><div class="session-actions"><button class="session-action" data-action="menu" aria-haspopup="menu" aria-expanded="false" title="Chat actions" aria-label="Chat actions">⋯</button></div></div>').join(""):'<p class="empty-sessions">'+(query?"No matching chats.":"Your chats will appear here after the first session.")+'</p>';
+  const list=$("#session-list");
+  const expanded=new Set([...list.querySelectorAll("details[open]")].map(item=>item.dataset.group));
+  const renderRow=s=>'<div class="session-row '+(state.session?.id===s.id?"active":"")+'" data-session="'+esc(s.id)+'"><button class="session-button" data-action="open" title="'+esc(s.title)+'"><span class="session-title">'+esc(s.title)+'</span><span class="session-meta">'+modeNames[s.mode||"agent"]+' · '+(s.messageCount||0)+' messages</span></button><div class="session-actions"><button class="session-action" data-action="menu" aria-haspopup="menu" aria-expanded="false" title="Chat actions" aria-label="Chat actions">⋯</button></div></div>';
+  const group=(label,key,items,open=true)=>items.length?'<details class="session-group" data-group="'+esc(key)+'" '+(query||expanded.has(key)||!list.hasChildNodes()&&open||!list.querySelector('[data-group="'+CSS.escape(key)+'"]')&&open||items.some(item=>item.id===state.session?.id)?"open":"")+'><summary title="'+esc(key)+'">'+esc(label)+'</summary>'+items.map(renderRow).join("")+'</details>':"";
+  const projects=new Map();
+  for(const session of data.filter(item=>!item.pinned&&!item.archived)){
+    if(!projects.has(session.workspace))projects.set(session.workspace,[]);
+    projects.get(session.workspace).push(session);
+  }
+  list.innerHTML=data.length?group("Pinned","pinned",data.filter(item=>item.pinned&&!item.archived))+
+    [...projects].map(([workspace,items])=>group(shortPath(workspace),workspace,items)).join("")+
+    group("Archived","archived",data.filter(item=>item.archived),false):
+    '<p class="empty-sessions">'+(query?"No matching chats.":"Saved chats appear here.")+'</p>';
 }
 async function loadSessions(){state.sessions=(await api("/api/sessions")).sessions||[];$("#session-search").oninput?.()}
 async function loadModels(force=false){
@@ -151,6 +212,10 @@ async function openSession(id,change=true){
       $(".sidebar").classList.remove("open");
     }
     closePopover();renderTop();renderSidebar();if(state.view==="chats")renderChats();
+    if(state.session.mode==="agent")void api("/api/sessions/"+sid(id)+"/branch").then(({branch})=>{
+      if(state.session?.id!==id)return;
+      state.session.branch=branch;renderTop();
+    }).catch(()=>{});
     return state.session;
   }catch(e){toast("Open chat failed: "+e.message,"error")}
 }
@@ -170,8 +235,16 @@ async function handoff(id){
 function sessionMenu(anchor,id){
   const node=document.createElement("div");
   node.style.width="176px";node.setAttribute("role","menu");node.setAttribute("aria-label","Chat actions");
-  node.innerHTML='<div class="popover-list"><button class="popover-item" role="menuitem">Rename chat</button><button class="popover-item" role="menuitem">Delete chat</button></div>';
-  const [rename,remove]=node.querySelectorAll("button");
+  const session=(state.searchResults||[]).find(item=>item.id===id)||state.sessions.find(item=>item.id===id);
+  node.innerHTML='<div class="popover-list"><button class="popover-item" role="menuitem">Rename chat</button><button class="popover-item" role="menuitem">'+(session?.pinned?"Unpin chat":"Pin chat")+'</button><button class="popover-item" role="menuitem">'+(session?.archived?"Restore chat":"Archive chat")+'</button><button class="popover-item" role="menuitem">Delete chat</button></div>';
+  const [rename,pin,archive,remove]=node.querySelectorAll("button");
+  async function toggle(flag){
+    closePopover(true);
+    try{await patch("/api/sessions/"+sid(id),{[flag]:!session?.[flag]});await loadSessions();}
+    catch(error){toast(error.message,"error");}
+  }
+  pin.onclick=()=>void toggle("pinned");
+  archive.onclick=()=>void toggle("archived");
   rename.onclick=()=>{closePopover(true);void renameSession(id)};
   remove.onclick=()=>{closePopover(true);void deleteSession(id)};
   openPopover(node,anchor);
@@ -294,18 +367,17 @@ const homePrompts={
 function chatComposer(mode,running,home){
   const agent=mode==="agent";
   const model=modelIdentity(selectedModel()).label||"Choose model";
-  const placeholder=agent?"Describe a task in this workspace…":"Ask a question or outline a plan…";
+  const placeholder=agent?"Describe a task in this workspace…":mode==="plan"?"Describe what you want to plan…":"Ask a question…";
   return '<div class="composer-wrap"><div class="composer"><textarea id="chat-input" rows="'+(home?1:2)+
     '" maxlength="16000" placeholder="'+placeholder+'" aria-label="Message"></textarea><div class="composer-buttons">'+
-    (home?'<button type="button" class="btn btn-small home-mode" id="home-mode-trigger" aria-label="Chat mode, '+modeNames[mode]+
-      '" aria-haspopup="menu" aria-expanded="false">'+modeIcon(mode)+modeNames[mode]+chevron+'</button>':"")+
-    (agent?'<button type="button" class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>':"")+
+    ('<button type="button" class="btn btn-small home-mode" id="home-mode-trigger" aria-label="Chat mode, '+modeNames[mode]+
+      '" aria-haspopup="menu" aria-expanded="false">'+modeIcon(mode)+modeNames[mode]+chevron+'</button>')+
+    '<button type="button" class="btn btn-small" id="chat-attach" title="Attach text file" aria-label="Attach text file">＋</button>'+
     '<button type="button" class="btn btn-small composer-model" id="composer-model" aria-label="Choose chat model" aria-haspopup="dialog" aria-expanded="false" title="'+esc(model)+'"><span>'+esc(model)+'</span>'+chevron+'</button>'+
     (agent?'<button type="button" class="btn btn-small permission-trigger" id="permission-trigger" aria-haspopup="menu" aria-expanded="false"></button>':"")+
-    '<span class="badge" id="save-status" '+(home?"hidden":"")+'>'+(running?"Running":"Saved on PC")+'</span>'+
-    (home?'<div id="composer-performance"></div>':"")+
+    '<span class="badge" id="save-status">'+(running?"Running":"Saved on PC")+'</span>'+
     '<button type="button" class="btn btn-primary compose-send" id="chat-send">'+(running?"Stop":"Send")+
-    '</button></div>'+(home?"":'<div id="composer-performance"></div>')+'</div></div>';
+    '</button></div></div><div id="composer-performance"></div></div>';
 }
 
 function chatHome(mode,session,composer){
@@ -317,8 +389,8 @@ function chatHome(mode,session,composer){
   const workspace=agent?'<button class="btn btn-small" type="button" id="home-workspace" aria-haspopup="menu" aria-label="'+esc("Workspace: "+(folder||"Choose workspace"))+'" title="'+esc(folder)+'" '+(session?"disabled":"")+'>'+esc(folder?shortPath(folder):"Choose workspace")+'</button>':"";
   return '<section class="home-stage" aria-labelledby="home-title"><div class="home-intro">'+
     '<img src="/wiskharness.png" width="36" height="36" alt=""><h1 id="home-title">'+
-    (agent?"What should WiskHarness work on?":"What would you like to plan?")+'</h1></div>'+composer+
-    '<div class="home-shortcuts" role="group" aria-label="Workspace and prompt suggestions">'+workspace+homePrompts[mode].map(([label],index)=>
+    (agent?"What should WiskHarness work on?":mode==="plan"?"What would you like to plan?":"What would you like to know?")+'</h1></div>'+composer+
+    '<div class="home-shortcuts" role="group" aria-label="Workspace and prompt suggestions">'+workspace+(homePrompts[mode]||homePrompts.plan).map(([label],index)=>
       '<button class="btn btn-plain" type="button" data-home-prompt="'+index+'">'+label+'</button>').join("")+
     (setup?'<button class="btn btn-plain" type="button" id="configure-goose">'+(missing?"Set up Goose":"Set up portable Goose")+'</button>':"")+
     '</div>'+
@@ -330,22 +402,39 @@ function chatHome(mode,session,composer){
 
 function renderChats(){
   renderTop();
-  const s=state.session,mode=currentMode(),plan=mode==="plan",running=runInView(),home=!s?.messages?.length;
+  const s=state.session,mode=currentMode(),plan=mode!=="agent",running=runInView(),home=!s?.messages?.length;
   const composer=chatComposer(mode,running,home);
   const transcript='<div class="chat-scroll" id="chat-scroll"><div class="chat-scroll-inner" id="chat-body"></div></div>';
-  const inspector='<aside class="chat-inspector"><div class="inspector-header">Session inspector</div><div id="chat-inspector" class="inspector-inner"></div></aside>';
-  $("#content").innerHTML='<div class="chat-view '+mode+(home?' chat-home':'')+'"><div class="chat-main">'+
-    (home?chatHome(mode,s,composer):transcript+composer)+'</div>'+(!home&&!plan?inspector:"")+'</div>';
+  const inspector='<aside class="chat-inspector development-panel" aria-label="Development">'+
+    '<div class="panel-resize" role="separator" aria-label="Resize development panel" aria-orientation="vertical" tabindex="0"></div>'+
+    '<div id="development-panel" class="development-inner"></div></aside>';
+  const panelOpen=localStorage.getItem("wisk-development")!=="closed";
+  const viewClass=panelOpen&&!home&&!plan?" has-development":"";
+  $("#content").innerHTML='<div class="chat-view '+(plan?"plan":mode)+(home?' chat-home':'')+viewClass+'"><div class="chat-main">'+
+    (home?chatHome(mode,s,composer):transcript+composer)+'</div>'+(!home&&!plan&&panelOpen?inspector:"")+'</div>';
+  const panelToggle=$("#development-toggle");
+  panelToggle.hidden=home||plan;
+  panelToggle.setAttribute("aria-expanded",String(panelOpen&&!home&&!plan));
+  panelToggle.onclick=()=>{
+    rememberDraft();
+    localStorage.setItem("wisk-development",panelOpen?"closed":"open");
+    renderChats();
+  };
+  const panel=$("#development-panel");
+  if(panel){
+    resizePanel(panel.parentElement.querySelector(".panel-resize"),panel.closest(".chat-view"),"--development-width","wisk-development-width",360,285,680,-1);
+    state.development=mountDevelopment(panel,s,()=>openSession(s.id,false));
+  }else state.development=null;
   if(!home){
     const body=$("#chat-body");
     const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",incomplete:"Incomplete",error:"Error"};
-    body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
+    body.innerHTML='<div class="chat-heading"><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
     for(const m of s.messages)appendMessage(m);
     if(!plan&&!running&&s.task){
       const details=document.createElement("section");
-      if(s.task.stopReason){const reason=document.createElement("p");reason.textContent="Stop reason: "+s.task.stopReason.replaceAll("_"," ");details.append(reason)}
+      if(s.task.stopReason&&s.status!=="completed"){const reason=document.createElement("p");reason.textContent="Stop reason: "+s.task.stopReason.replaceAll("_"," ");details.append(reason)}
       const progress=s.task.checkpoint;
-      if(progress){
+      if(progress&&s.status!=="completed"){
         const line=document.createElement("p");
         const used=(amount,limit)=>limit?amount+"/"+limit:amount;
         const limits=progress.limits;
@@ -367,7 +456,7 @@ function renderChats(){
       }
       if(details.children.length)body.append(details);
     }
-    if(plan&&!running){
+    if(mode==="plan"&&!running){
       const action=document.createElement("button");action.className="btn btn-small";
       action.textContent="Continue in Agent Mode";action.onclick=()=>handoff(s.id);body.append(action);
     }
@@ -384,7 +473,7 @@ function renderChats(){
   void mountPermissions($("#permission-trigger"),api,post,toast);
   updatePerformance();
   const mobile = matchMedia("(max-width: 960px)").matches;
-  if(!plan&&s){
+  if(!plan&&s&&(home||mobile&&!panelOpen)){
     let tools=$("#chat-inspector");
     if(mobile&&!home){
       tools=document.createElement("div");
@@ -409,8 +498,8 @@ function renderChats(){
   input.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing){e.preventDefault();if(!send.disabled&&!runInView())runPrompt()}};
   input.oninput=e=>{e.target.style.height="auto";e.target.style.height=Math.min(190,e.target.scrollHeight)+"px";drafts.set(draftKey(),e.target.value);updateSend()};
   if(input.value)input.dispatchEvent(new Event("input"));
+  $("#home-mode-trigger").onclick=event=>showModePicker(event.currentTarget);
   if(home){
-    $("#home-mode-trigger").onclick=event=>showModePicker(event.currentTarget);
     const folder=$("#home-workspace");
     if(folder&&!folder.disabled)folder.onclick=()=>{
       const list=document.createElement("div");
@@ -452,8 +541,8 @@ function updatePerformance(){
   const model=selectedModel(),identity=modelIdentity(model);
   mountPerformance(root,{
     model,identity,sessionId:state.session?.id,
-    metrics:state.performance,running:runInView()&&state.busy,compact:!!root.closest(".chat-home"),
-    connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()==="plan"||state.health?.agentEngine!=="goose"||state.health?.goose):
+    metrics:state.performance,running:runInView()&&state.busy,runtime:runtimeName(),
+    connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()!=="agent"||state.health?.agentEngine!=="goose"||state.health?.goose):
       state.providerData?.providers.find(item=>item.name===identity.provider||item.id===identity.provider)?.connected,
     onOpen:()=>api("/api/models/diagnostics")
   });
@@ -493,21 +582,34 @@ function appendMessage(m){
     const icon=document.createElement("div");icon.className="assistant-icon";icon.innerHTML=modeIcon(currentMode());
     const content=document.createElement("div");content.className="assistant-body";
     const byline=document.createElement("div");byline.className="assistant-byline";byline.textContent="WiskHarness";
-    const answer=document.createElement("div");answer.className="assistant-text";renderMarkdown(answer,m.text,{streaming:m.status==="streaming"});
-    const activity=document.createElement("details");activity.className="message-tools";activity.hidden=currentMode()==="plan"||!(m.tools?.length);
+    const answer=document.createElement("div");answer.className="assistant-text";renderMarkdown(answer,m.text,{
+      streaming:m.status==="streaming",onFile:currentMode()==="agent"?openReferencedFile:undefined
+    });
+    const activity=document.createElement("details");activity.className="message-tools";activity.hidden=!(m.tools?.length);
     activity.innerHTML='<summary>Tool activity (<span class="tool-count">'+(m.tools?.length||0)+'</span>)</summary><div class="tool-list"></div>';
     for(const t of m.tools||[])activity.querySelector(".tool-list").append(toolRow(t));
     const status=document.createElement("div");status.className="message-status";status.textContent=m.status==="streaming"?"Working…":m.status==="error"?(m.error||"Error"):m.status==="interrupted"?"Interrupted":m.status==="cancelled"?"Stopped":m.status==="incomplete"?"Incomplete":"";
     if(m.status==="error")status.classList.add("error");
-    content.append(byline,answer,activity,status);row.append(icon,content);block.append(row);
+    content.append(byline);
+    if(m.reasoning){
+      const thought=document.createElement("details");thought.className="message-tools";
+      const summary=document.createElement("summary");summary.textContent="Model reasoning excerpt";
+      const paragraph=document.createElement("p");paragraph.textContent=m.reasoning;
+      thought.append(summary,paragraph);content.append(thought);
+    }
+    content.append(answer,activity,status);row.append(icon,content);block.append(row);
   }
   target.append(block);return block;
+}
+function openReferencedFile(path){
+  if(!state.development)$("#development-toggle")?.click();
+  state.development?.({type:"open-file",path});
 }
 function scrollChat(){const root=$("#chat-scroll");if(root)root.scrollTop=root.scrollHeight}
 function updateInspector(){
   const panel=$("#chat-inspector");if(!panel)return;
   const p=state.health?.preflight||{},s=state.session;
-  panel.innerHTML='<div class="inspector-group"><div class="inspector-label">AGENT</div><div class="inspector-info"><strong>'+(state.health?.agentEngine==="goose"?"Goose ACP + Ollama":"Ollama Agent")+'</strong><p>'+esc(s?.model||state.modelData?.selected||"No model")+'</p>'+(s?.task?.engineNotice?'<p>'+esc(s.task.engineNotice)+'</p>':"")+'<p class="'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"green":"")+'">'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"Connected":"Setup needed")+'</p></div></div>'+
+  panel.innerHTML='<div class="inspector-group"><div class="inspector-label">AGENT</div><div class="inspector-info"><strong>'+runtimeName()+'</strong><p>'+esc(s?.model||state.modelData?.selected||"No model")+'</p>'+(s?.task?.engineNotice?'<p>'+esc(s.task.engineNotice)+'</p>':"")+'<p class="'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"green":"")+'">'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"Connected":"Setup needed")+'</p></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">SAVED SESSION</div><div class="inspector-list"><div class="inspector-item"><span>Storage</span><span>Local files</span></div><div class="inspector-item"><span>Messages</span><span>'+(s?.messages?.length||0)+'</span></div><div class="inspector-item"><span>Status</span><span>'+esc(s?.status||"Not started")+'</span></div></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">WORKING DIRECTORY</div><div class="inspector-info"><strong>'+esc(shortPath(s?.workspace||p.workspace||"Workspace"))+'</strong><p class="codepath">'+esc(s?.workspace||p.workspace||"Not configured")+'</p></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">TOOLS</div><div class="inspector-list"><div class="inspector-item"><span>File operations</span><span>'+(p.workspace===s?.workspace&&p.filesystem?"Verified":"Not checked")+'</span></div><div class="inspector-item"><span>PowerShell</span><span>'+(p.workspace===s?.workspace&&p.terminal?"Verified":"Not checked")+'</span></div></div></div>'+
@@ -570,6 +672,7 @@ async function runPrompt(resume=false){
     if(atEnd)scrollChat();
   }
   function onEvent(event){
+    if(event.type==="review"||event.type==="agent-terminal"){if(runInView())state.development?.(event);}
     if(event.type==="text"){
       reply.text+=event.text||"";
       if(markdownTimer===null&&state.session?.id===recordId)markdownTimer=setTimeout(renderStream,100);
@@ -583,7 +686,7 @@ async function runPrompt(resume=false){
         const previous=[...list.children].find(row=>row.dataset.tool===t.id), next=toolRow(t);
         if(previous){next.open=previous.open;previous.replaceWith(next)}else list.append(next);
       }
-    }else if(event.type==="task"){record.task=event.task;}
+    }else if(event.type==="task"){record.task=event.task;if(runInView())state.development?.(event);}
     else if(event.type==="status"&&event.update.includes("compatibility mode")){toast(event.update);}
     else if(event.type==="permission")showPermission(event);
     else if(event.type==="permission-resolved")dismissPermission(event.requestId);
@@ -781,7 +884,7 @@ function renderModels(){
     if(!body)return;
     const term=$("#models-search").value.toLowerCase();
     body.innerHTML=installed.filter(m=>m.name.toLowerCase().includes(term)).map(m=>
-      '<tr><td><strong>'+esc(m.name)+'</strong>'+'</td><td>'+((m.size||0)/1073741824).toFixed(1)+' GB</td><td>'+esc(m.family||"Unknown")+'</td><td><input type="checkbox" class="switch model-visible" data-model="'+esc(m.name)+'" aria-label="Show '+esc(m.name)+'" '+((d.visible||[]).includes(m.name)?"checked":"")+(pendingVisibility.has(m.name)?" disabled":"")+'></td><td><button class="btn btn-small '+(m.name===d.selected?"btn-primary":"")+'" data-choose="'+esc(m.name)+'" '+(m.name===d.selected?"disabled":"")+'>'+(m.name===d.selected?"Selected":"Set default")+'</button></td></tr>').join("");
+      '<tr><td><button type="button" class="model-detail-link" data-detail="'+esc(m.name)+'">'+esc(m.name)+'</button><small>'+esc([m.parameters,m.quantization].filter(Boolean).join(" · "))+'</small></td><td>'+((m.size||0)/1073741824).toFixed(1)+' GB</td><td>'+esc(m.family||"Unknown")+'</td><td><input type="checkbox" class="switch model-visible" data-model="'+esc(m.name)+'" aria-label="Show '+esc(m.name)+'" '+((d.visible||[]).includes(m.name)?"checked":"")+(pendingVisibility.has(m.name)?" disabled":"")+'></td><td><button class="btn btn-small '+(m.name===d.selected?"btn-primary":"")+'" data-choose="'+esc(m.name)+'" '+(m.name===d.selected?"disabled":"")+'>'+(m.name===d.selected?"Selected":"Set default")+'</button></td></tr>').join("");
     $$(".model-visible").forEach(sw=>sw.onchange=async()=>{
       const model=sw.dataset.model;
       if(pendingVisibility.has(model))return;
@@ -801,6 +904,7 @@ function renderModels(){
       }
     });
     $$("[data-choose]").forEach(b=>b.onclick=()=>selectModel(b.dataset.choose));
+    $$("[data-detail]").forEach(b=>b.onclick=()=>void openModelDetail(b.dataset.detail));
   };
   if(body){draw();$("#models-search").oninput=draw}
   $("#models-refresh").onclick=async()=>{await loadModels(true);if(state.view==="models")renderModels()};
@@ -825,14 +929,60 @@ function renderModels(){
     };
   }
 }
+async function openModelDetail(name){
+  try{
+    const {model,info,overrides}=await api("/api/models/detail?name="+encodeURIComponent(name));
+    const dialog=document.createElement("dialog");
+    dialog.className="modal workbench-dialog";
+    dialog.setAttribute("aria-label","Model configuration");
+    const options=[["context","Context tokens",1],["outputs","Output tokens",1],["temperature","Temperature",.01],["topP","Top P",.01],["topK","Top K",1]];
+    dialog.innerHTML='<h2>'+esc(model.name)+'</h2><p>'+esc([model.parameters,model.quantization,info.tools?"Native tools advertised":"Native tools unavailable",info.trainedContext?info.trainedContext.toLocaleString()+" trained context tokens":null].filter(Boolean).join(" · "))+'</p>'+
+      '<form><p class="inline-help">Vibe overrides. Leave a field blank to use its default.</p>'+
+      options.map(([key,label,step])=>'<label class="field-label" for="model-'+key+'">'+label+'</label><input type="number" class="field" id="model-'+key+'" step="'+step+'" value="'+esc(overrides[key]??"")+'">').join("")+
+      (info.thinking?'<label class="field-label" for="model-reasoning">Reasoning</label><select class="field" id="model-reasoning"><option value="">Model default</option><option value="on">On</option><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>':"")+
+      '<p role="status" data-model-status></p><div class="modal-actions"><button type="button" class="btn">Close</button><button type="submit" class="btn btn-primary">Save options</button></div></form>';
+    const reasoning=dialog.querySelector("#model-reasoning");
+    if(reasoning)reasoning.value=overrides.reasoning||"";
+    dialog.querySelector("button").onclick=()=>dialog.close();
+    dialog.querySelector("form").onsubmit=async event=>{
+      event.preventDefault();
+      const submit=event.submitter;submit.disabled=true;
+      try{
+        const result=Object.fromEntries(options.flatMap(([key])=>{
+          const input=dialog.querySelector("#model-"+key);
+          return input.value?[[key,input.valueAsNumber]]:[];
+        }));
+        if(reasoning?.value)result.reasoning=reasoning.value;
+        await post("/api/models/detail",{name,overrides:result});
+        dialog.close();toast("Model options saved","good");
+      }catch(error){dialog.querySelector("[data-model-status]").textContent=error.message;}
+      finally{submit.disabled=false;}
+    };
+    $("#dialog-layer").append(dialog);
+    dialog.addEventListener("close",()=>dialog.remove(),{once:true});
+    dialog.showModal();
+  }catch(error){toast(error.message,"error");}
+}
+
 function renderSettings(){
   const directory=state.health?.preflight?.workspace||"";
   $("#content").innerHTML='<div class="content-scroll"><div class="page-width settings-page">'+heading("","Settings","Manage your local runtime, workspace, and preferences.")+
     '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Appearance</h2><p>Choose a theme and motion preference</p></div></div><div class="card-content"><div class="tile-grid">'+THEMES.map(t=>
       '<button class="theme-tile '+(document.body.dataset.theme===t[0]?"selected":"")+'" data-theme="'+t[0]+'" aria-pressed="'+(document.body.dataset.theme===t[0])+'"><span class="theme-swatch" style="background:'+t[3]+'"><i style="background:'+t[4]+'"></i><i style="background:'+t[5]+'"><b style="background:'+t[6]+'"></b></i></span><strong>'+t[1]+'</strong><small>'+t[2]+'</small></button>').join("")+'</div><div class="divider"></div><div class="setting-row"><div><strong>Interface animations</strong></div><input class="switch" type="checkbox" id="motion-checkbox" aria-label="Interface animations" '+(document.body.dataset.motion==="on"?"checked":"")+'></div></div></section>'+
     '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Default project directory</h2><p>Used for newly created chats</p></div></div><div class="card-content"><label class="field-label" for="workspace-path">Windows folder</label><div class="field-row"><input class="field" id="workspace-path" value="'+esc(directory)+'"><button class="btn btn-primary" id="workspace-change">Use folder</button></div><p class="inline-help">Changing this does not move existing chats. Each chat stores its own workspace.</p></div></section>'+
-    '<section class="card"><div class="card-header"><div><h2>Runtime diagnostics</h2><p>Local backend and session storage</p></div><button class="btn btn-small" id="settings-check">Run checks</button></div><div class="card-content status-list"><div class="status-line"><span>Goose CLI</span><span class="'+(state.health?.goose?"green":"")+'">'+(state.health?.goose?"Installed":"Missing")+'</span></div><div class="status-line"><span>Ollama endpoint</span><span>'+esc(state.health?.ollamaEndpoint||"Unavailable")+'</span></div><div class="status-line"><span>Filesystem</span><span>'+(state.health?.preflight?.filesystem?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>PowerShell</span><span>'+(state.health?.preflight?.terminal?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>Session storage</span><span>Local files</span></div></div></section></div></div>';
+    '<section class="card"><div class="card-header"><div><h2>Runtime diagnostics</h2><p>Local backend and session storage</p></div><button class="btn btn-small" id="settings-check">Run checks</button></div><div class="card-content status-list"><div class="status-line"><span>Mistral Vibe</span><span>'+esc(state.health?.vibe?.installed?state.health.vibe.version:"Unavailable")+'</span></div><div class="status-line"><span>Goose CLI</span><span class="'+(state.health?.goose?"green":"")+'">'+(state.health?.goose?"Installed":"Missing")+'</span></div><div class="status-line"><span>Ollama endpoint</span><span>'+esc(state.health?.ollamaEndpoint||"Unavailable")+'</span></div><div class="status-line"><span>Filesystem</span><span>'+(state.health?.preflight?.filesystem?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>PowerShell</span><span>'+(state.health?.preflight?.terminal?"Verified":"Unavailable")+'</span></div><div class="status-line"><span>Session storage</span><span>Local files</span></div></div></section></div></div>';
   $$(".theme-tile").forEach(b=>b.onclick=()=>{setTheme(b.dataset.theme);toast("Theme changed","good")});
+  $("#motion-checkbox").closest(".setting-row").insertAdjacentHTML("afterend",'<div class="setting-row"><label for="theme-accent">Accent for this theme</label><div class="workbench-actions"><input type="color" id="theme-accent"><button type="button" class="btn btn-small" id="reset-accent">Reset</button></div></div>');
+  const color=$("#theme-accent");
+  color.oninput=()=>{
+    localStorage.setItem(AKEY,JSON.stringify({...customAccents(),[document.body.dataset.theme]:color.value}));
+    applyTheme();
+  };
+  $("#reset-accent").onclick=()=>{
+    const accents=customAccents();delete accents[document.body.dataset.theme];
+    localStorage.setItem(AKEY,JSON.stringify(accents));applyTheme();
+  };
+  applyTheme();
   $("#motion-checkbox").onchange=e=>{localStorage.setItem(MKEY,e.target.checked?"on":"off");applyTheme()};
   $("#workspace-change").onclick=async()=>{
     try{await post("/api/workspace",{workspace:$("#workspace-path").value.trim()});state.draftWorkspace=undefined;await Promise.all([loadHealth(),loadProjects()]);renderSettings();toast("Default directory saved","good")}
@@ -849,11 +999,38 @@ function renderSettings(){
     }catch(e){toast(e.message,"error")}
     finally{if(event.target.isConnected)event.target.disabled=false}
   };
-  void mountSettings($("#content .page-width"),async()=>{
+  const settingsPage=$("#content .page-width");
+  settingsPage.querySelector(".page-heading-row").insertAdjacentHTML("afterend",'<input class="field settings-search" type="search" id="settings-search" placeholder="Find a setting…" aria-label="Search settings">');
+  $("#settings-search").oninput=event=>{
+    const search=event.target.value.trim().toLowerCase();
+    for(const card of settingsPage.querySelectorAll(".card"))card.hidden=Boolean(search)&&!card.textContent.toLowerCase().includes(search);
+  };
+  void mountSettings(settingsPage,async()=>{
     await Promise.all([loadHealth(),loadModels(),loadProjects(),loadSessions()]);
     render();
   },loadModels,loadHealth);
 }
+function openCommandPalette(){
+  if(document.querySelector("dialog[open]"))return;
+  const commands=[["New chat",()=>$("#new-session").click()],["Search chats",()=>$("#session-search").focus()],
+    ["Projects",()=>changeView("projects")],["Models",()=>changeView("models")],["MCP servers",()=>changeView("mcp")],
+    ["Settings",()=>changeView("settings")],["Choose theme",()=>showThemes($("#theme-trigger"))]];
+  const dialog=document.createElement("dialog");
+  dialog.className="modal workbench-dialog";dialog.setAttribute("aria-label","Command palette");
+  dialog.innerHTML='<input class="field" type="search" aria-label="Search commands" placeholder="Search commands…" autofocus><div class="popover-list"></div>';
+  const input=dialog.querySelector("input"),list=dialog.querySelector(".popover-list");
+  const draw=()=>list.replaceChildren(...commands.filter(([label])=>label.toLowerCase().includes(input.value.toLowerCase())).map(([label,run])=>{
+    const button=document.createElement("button");button.type="button";button.className="popover-item";button.textContent=label;
+    button.onclick=()=>{dialog.close();run()};return button;
+  }));
+  input.oninput=draw;
+  input.onkeydown=event=>{
+    if(event.key==="ArrowDown"){event.preventDefault();list.firstElementChild?.focus()}
+    if(event.key==="Enter"){event.preventDefault();list.firstElementChild?.click()}
+  };
+  draw();$("#dialog-layer").append(dialog);dialog.addEventListener("close",()=>dialog.remove(),{once:true});dialog.showModal();
+}
+
 function bindEvents(){
   $("#navigation").onclick=e=>{const view=e.target.closest("[data-view]")?.dataset.view;if(view)changeView(view)};
   bindPopovers();
@@ -887,7 +1064,11 @@ function bindEvents(){
   $("#mobile-menu").onclick=toggleSidebar;
   $("#collapse-sidebar").onclick=toggleSidebar;
   document.addEventListener("keydown",e=>{
-    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("#new-session").click()}
+    if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==="k"){
+      e.preventDefault();
+      if(e.shiftKey)openCommandPalette();
+      else $("#new-session").click();
+    }
   });
   window.addEventListener("storage",e=>{if(e.key===TKEY||e.key===MKEY)applyTheme()});
 }
@@ -905,6 +1086,7 @@ async function importLegacy(){
 }
 async function start(){
   applyTheme();bindEvents();
+  resizePanel($("#sidebar-resize"),$(".shell"),"--navigation-width","wisk-navigation-width",244,190,360,1);
   void mountPermissions(null,api,post,toast);
   window.addEventListener("wisk-measurements-changed",event=>{if(!event.detail){state.performance=null;updatePerformance()}});
   window.addEventListener("wisk-security-changed",()=>void mountPermissions(null,api,post,toast));
