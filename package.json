@@ -1,7 +1,7 @@
 {
   "name": "wiskharness",
   "private": true,
-  "version": "0.7.3",
+  "version": "0.7.4-beta.1",
   "type": "module",
   "main": "desktop/electron-main.cjs",
   "description": "Self-hosted Windows coding assistant with local and cloud Plan models",

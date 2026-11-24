@@ -137,7 +137,8 @@ export async function launchVibe({
       onUpdate(params.update);
     })
     .onRequest(acp.methods.client.session.requestPermission, ({params}) => {
-      const tool = toolNames.get(params.toolCall?.toolCallId);
+      // Vibe may use the tool name as the call id before a session update records it.
+      const tool = toolNames.get(params.toolCall?.toolCallId) ?? params.toolCall?.toolCallId;
       const option = params.options?.find(item => item.kind === "allow_once");
       if (ready && params.sessionId === sessionId && !signal.aborted && option && approveTool?.(tool)) {
         return {outcome: {outcome: "selected", optionId: option.optionId}};
@@ -178,7 +179,7 @@ export async function launchVibe({
     try {
       const info = await request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {},
-        clientInfo: {name: "WiskHarness", version: "0.7.3"}
+        clientInfo: {name: "WiskHarness", version: "0.7.4-beta.1"}
       });
       if (savedSession && info.agentCapabilities?.loadSession) {
         try {

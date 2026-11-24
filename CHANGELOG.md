@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.4-beta.1
+
+- Allow routine workspace reads, edits, builds, tests and tool inspection in Full Access without repeated approval.
+- Keep separate approval for installs, destructive commands, system changes, unknown commands and paths outside the workspace, with a specific reason on each request.
+- Split mixed routine and protected shell commands so the agent can rerun the safe steps separately.
+- Improve recovery hints for missing tools, bad paths, compile or test failures and duplicate calls.
+
 ## 0.7.3
 
 - Bundle Mistral Vibe as the primary Agent runtime for tool-capable Ollama models. Keep native Ollama and Goose as fallback choices.

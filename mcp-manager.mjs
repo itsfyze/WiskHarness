@@ -42,7 +42,7 @@ export function validateMcpAuth(input, transport) {
 
 export async function connectMcp(config, {workspace, auth, signal, electron=false}) {
   signal.throwIfAborted();
-  const client = new Client({name:"WiskHarness",version:"0.7.3"});
+  const client = new Client({name:"WiskHarness",version:"0.7.4-beta.1"});
   const transport = config.transport === "http"
     ? new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit:{redirect:"error",headers:auth?.bearer ? {authorization:"Bearer "+auth.bearer}:{}}

@@ -5,7 +5,7 @@ const shield='<svg class="mode-icon" viewBox="0 0 24 24" aria-hidden="true"><pat
 const options={
   ask:["Ask for approval","Review restricted tool requests."],
   auto:["Approve for me","Approve eligible workspace file reads automatically."],
-  full:["Full access","Allow routine project commands. Ask before operations outside that scope."]
+  full:["Full access","Run routine project commands, builds, and tests. Ask before destructive actions, installs, system changes, credentials, or paths outside the workspace."]
 };
 
 function attachDialog(dialog){
@@ -17,7 +17,7 @@ function confirmFullAccess(){
   const dialog=document.createElement("dialog");
   dialog.className="modal";
   dialog.setAttribute("aria-label","Enable Full access");
-  dialog.innerHTML='<form method="dialog"><h2>Enable Full access?</h2><p>Routine PowerShell and CMD commands can run without a prompt. Other shell commands, including dependency installs and destructive actions, require separate approval. Build and test tools run with your Windows account permissions and can execute project code.</p><div class="modal-actions"><button class="btn" value="cancel" autofocus>Cancel</button><button class="btn btn-danger" value="enable">Enable Full access</button></div></form>';
+  dialog.innerHTML='<form method="dialog"><h2>Enable Full access?</h2><p>Routine PowerShell and CMD commands, file edits, builds, and tests can run without a prompt. Destructive actions, dependency installs, system changes, credential access, and paths outside the workspace still require separate approval. Build and test tools run with your Windows account permissions and can execute project code.</p><div class="modal-actions"><button class="btn" value="cancel" autofocus>Cancel</button><button class="btn btn-danger" value="enable">Enable Full access</button></div></form>';
   return new Promise(resolve=>{
     dialog.addEventListener("close",()=>resolve(dialog.returnValue==="enable"),{once:true});
     attachDialog(dialog);

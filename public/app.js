@@ -762,7 +762,7 @@ function showPermission(event){
   if(event.details){const details=document.createElement("pre");details.textContent=event.details;dialog.append(details)}
   const actions=document.createElement("div");actions.className="modal-actions";
   const policy=document.createElement("p");
-  policy.textContent="Operation · "+event.category+" · "+(event.policy==="allow"?"Allow eligible reads":"Ask every time");
+  policy.textContent=(event.reason||"The "+event.category+" operation requires approval")+" · "+event.category;
   dialog.append(policy);
   async function answer(optionId,{remember=false,persistent}={}){
     for(const button of actions.children)button.disabled=true;

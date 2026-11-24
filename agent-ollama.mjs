@@ -154,10 +154,24 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
   publish(0,0,null);
   let callCount=0, successCount=0, noCalls=0, lastActionFailed=false, needsVerification=false;
   let workspaceRevision=0;
+  function recoveryHint(reason) {
+    const text=String(reason);
+    if(/is not recognized|not found|ENOENT|not available|missing (?:command|tool)|No such file/i.test(text))
+      return " Check available commands with Get-Command and locally installed tool paths, then use an installed alternative rather than repeating the same call.";
+    if(/outside the workspace|Blocked:|protected|credential|sensitive/i.test(text))
+      return " Keep operations inside the workspace and run any protected step separately so it can request its own approval.";
+    if(/compile|syntax|error TS|error CS|error C\d|lint|test failed|assert/i.test(text))
+      return " Read the first failing diagnostic, fix the source, and rerun the same check.";
+    if(/EACCES|access is denied|permission denied/i.test(text))
+      return " Use an authorized path or report the exact blocker instead of retrying the same command.";
+    if(/already ran|same inputs/i.test(text))
+      return " Use the saved prior result or change the operation instead of repeating it.";
+    return "";
+  }
   function recover(reason) {
     recovery++;
-    correction="\nRecovery required: "+reason+
-      " Read the latest diagnostics. Try a different authorized action. For a missing command, check Get-Command and locally installed tools, then resolve the path or choose an available build tool. For compile or test failures, inspect the failing file, fix it and rerun the check. Ask before dependency installation.";
+    correction="\nRecovery required: "+reason+" Read the latest diagnostics before acting."+recoveryHint(reason)+
+      " For compile or test failures, inspect the failing file, fix it and rerun the check. Ask before dependency installation.";
   }
   let lastRound=0,lastStop=null,lastTokens;
   const finishIncomplete = (message,reason) => {publish(lastRound,callCount,lastStop,lastTokens);onText(message);return reason;};
@@ -248,7 +262,8 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
           duplicate?{ok:false,error:"This action already ran with the same inputs and workspace state. Use the prior result or try a different operation.",previous:previous.result}:
           await execute(name,input);
         lastActionFailed=!result.ok;
-        const permissionFailure=!result.ok&&/permission denied|permission policy/i.test(String(result.error));
+        const permissionFailure=!result.ok&&(/^(?:Blocked:|Permission denied|Permission policy)/i.test(String(result.error))||
+          /blocked by (?:the )?(?:workspace|security|tool) policy/i.test(String(result.error)));
         if(permissionFailure)blockedReason=result.error;
         if(!result.ok && name==="write_file" && /EEXIST/.test(String(result.error))) {
           result.error += " Read the existing file and use edit_file with exact before and after text.";

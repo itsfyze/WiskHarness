@@ -97,7 +97,7 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
           if(count===3){assert.match(toolResults.at(-1).error,/already ran/);message={tool_calls:[finalText("incomplete","No meaningful progress.") ]};}
           break;
         case "cancel":
-          message={tool_calls:[tool("run_command",{shell:"powershell",command:"Start-Sleep 60"})]};break;
+          message={tool_calls:[tool("run_command",{shell:"powershell",command:"Remove-Item -LiteralPath cancel-marker.txt -Force"})]};break;
         case "budget":
           if(count===3)assert.match(input.messages[0].content,/resumed from a saved checkpoint/);
           message={tool_calls:[count===4?finish("Workspace inspected after continuing."):tool("list_directory",{path:"."})]};break;
@@ -175,13 +175,18 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   let approvals=0;
   const approve=async event=>{approvals++;await api("/api/agent/permission",{requestId:event.requestId,optionId:"allow"});};
   assert.equal((await run("Diagnose failed tool requests [case:recover]",{permission:approve})).done.stopReason,"end_turn");
-  assert.equal(approvals,1);
-  const deny=async event=>{approvals++;await api("/api/agent/permission",{requestId:event.requestId,optionId:"reject"});};
+  assert.equal(approvals,0);
+  const permissionReasons=[];
+  const deny=async event=>{approvals++;permissionReasons.push(event.reason);await api("/api/agent/permission",{requestId:event.requestId,optionId:"reject"});};
   assert.equal((await run("Write outside and run a declined command [case:denied]",{permission:deny})).done.stopReason,"permission_blocked");
-  assert.equal(approvals,2);
+  assert.equal(approvals,1);
+  assert.equal(permissionReasons.length,1);
+  assert.notEqual(permissionReasons[0],"Ask every time");
+  assert.match(permissionReasons[0],/Unrecognized command|allowlist|requires approval/i);
   for(const file of [outside,path.join(workspace,"denied-marker.txt")])await assert.rejects(fs.stat(file),{code:"ENOENT"});
   const cancel=async(_event,id)=>{await api("/api/agent/cancel",{sessionId:id});};
   assert.equal((await run("Run a lengthy operation [case:cancel]",{permission:cancel})).done.stopReason,"cancelled");
+  await assert.rejects(fs.stat(path.join(workspace,"cancel-marker.txt")),{code:"ENOENT"});
   assert.equal((await run("Create compat.txt [case:compat]",{choose:compat})).done.stopReason,"end_turn");
   assert.equal(await fs.readFile(path.join(workspace,"compat.txt"),"utf8"),"Structured compatibility");
   assert.equal((await run("Create a file [case:unsupported]",{choose:unsupported})).done.stopReason,"tools_unsupported");

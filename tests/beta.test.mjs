@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assessTool,ordinaryDevelopmentCommand,permissionScope,permissionDecision,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
+import { assessTool,classifyShellCommand,shellAssessmentForCall,ordinaryDevelopmentCommand,permissionScope,permissionDecision,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
 import { credentialStore,parseModelRef,providerClient,providerConfig } from "../providers.mjs";
 import { workspaceGit } from "../git-workspace.mjs";
 
@@ -162,7 +162,7 @@ test("Full access automatically approves Goose shell and opaque tools while reta
   assert.equal(permissionDecision(restricted,scope,policy),"deny");
 });
 
-test("Full Access recognizes routine workspace commands without approving shell composition or installs", t=>{
+test("Full Access recognizes routine development commands without approving shell composition or installs", t=>{
   const root=temporary(t);
   const check=command=>ordinaryDevelopmentCommand({command},root);
   for(const command of ["Get-Command cmake", "Get-Content app/main.py", "where.exe python",
@@ -171,4 +171,72 @@ test("Full Access recognizes routine workspace commands without approving shell 
   for(const command of ["npm install","cmake -P local.cmake","python -c code","node --eval expression",
     "Get-Content ../outside.txt","Get-Content .env","git push","dir & del *","tar --checkpoint-action=exec",
     "Start-Process powershell","del project.txt","Get-Content C:/outside.txt"])assert(!check(command),command);
+});
+
+test("Full Access classifier allows routine work and escalates protected operations with a reason", t=>{
+  const root=temporary(t);
+  fs.writeFileSync(path.join(root,"app.py"),"print('fixture')\n");
+  fs.writeFileSync(path.join(root,"localmod.py"),"VALUE = 1\n");
+  const policy={...securityDefaults,permissionMode:"full",permissionRules:[]};
+  const decide=(command,{shell="powershell",mode="full"}={})=>{
+    const call={title:"run_command",kind:"execute",rawInput:{shell,command}};
+    const active={...policy,permissionMode:mode};
+    const decision=assessTool({call,workspace:root,policy:active});
+    const classified=classifyShellCommand({command,shell,workspace:root});
+    const scope=permissionScope(call,decision,root);
+    return {classified,outcome:permissionDecision(decision,scope,active,{shell:classified})};
+  };
+  for(const command of ["Get-ChildItem .","Write-Output READY","python -m py_compile app.py",
+    "python -m unittest discover -s tests -v","python -m localmod","npm run build","cmake --build build",
+    "git status","dir; Get-ChildItem .",".\\gradlew.bat build","tar -xf fixture.zip -C build","deno run script.js"]){
+    const result=decide(command);
+    assert.equal(result.classified.risk,"routine",command);
+    assert.equal(result.outcome,"allow",command);
+    assert.match(result.classified.reason,/Recognized development/);
+  }
+  for(const command of ["npm install","npm audit fix","npm audit --fix","pnpm audit fix","yarn audit fix",
+    "python -m pip install requests","python -m pip --user install requests",
+    "python -m ensurepip","git push","git config --global user.name Fixture","Start-Process notepad",
+    "perl -e print(1)","node --eval 1","node --loader=data:text/javascript,console.log(1) app.js",
+    "cmake -P script.cmake","frobnicate --help","echo %PATH%",
+    'Get-Content "x$env:VAR/../outside.txt"']){
+    assert.notEqual(decide(command).classified.risk,"routine",command);
+    assert.equal(decide(command).outcome,"ask",command);
+  }
+  for(const command of ["Get-ChildItem HKLM:\\SOFTWARE","Get-Content Cert:\\CurrentUser\\My"]){
+    const result=decide(command);
+    assert.equal(result.classified.risk,"system",command);
+    assert.equal(result.outcome,"ask",command);
+  }
+  assert.equal(decide("Get-Content Env:PATH").outcome,"deny");
+  for(const command of ["del app.py","Remove-Item -LiteralPath app.py -Force"]){
+    const result=decide(command);
+    assert.equal(result.classified.risk,"destructive",command);
+    assert.equal(result.outcome,"ask",command);
+    assert.match(result.classified.reason,/Destructive/);
+  }
+  for(const command of ["Get-Content ../outside.txt","Get-Content .env"]){
+    const result=decide(command);
+    assert.equal(result.outcome,"deny",command);
+    assert.match(result.classified.reason,/outside the workspace|credential/i);
+  }
+  const mixed=decide("dir; del app.py");
+  assert.equal(mixed.classified.splitRequired,true);
+  assert.equal(mixed.outcome,"deny");
+  assert.match(mixed.classified.reason,/Run the routine steps separately/);
+  assert.equal(decide("Get-ChildItem .",{mode:"ask"}).outcome,"ask");
+  const nested=assessTool({call:{title:"mcp_server_tool",kind:"other",
+    rawInput:{server:"fixture",arguments:{path:"../outside.txt"}}},workspace:root,policy});
+  assert.equal(nested.denied,true);
+  assert.deepEqual(nested.outside,["../outside.txt"]);
+  const nestedAllowed=assessTool({call:{title:"mcp_server_tool",kind:"other",
+    rawInput:{server:"fixture",arguments:{path:"app.py"}}},workspace:root,policy});
+  assert.equal(nestedAllowed.denied,false);
+  assert.equal(permissionDecision(nestedAllowed,null,policy),"allow");
+  assert.equal(classifyShellCommand({command:"",workspace:root}).risk,"unknown");
+  const withoutKind=shellAssessmentForCall({call:{title:"custom tool",
+    rawInput:{command:"Remove-Item -LiteralPath app.py -Force"}},workspace:root});
+  assert.equal(withoutKind.risk,"destructive");
+  assert.equal(shellAssessmentForCall({call:{title:"text_editor",rawInput:{command:"view",path:"app.py"}},workspace:root}),null);
+  assert.equal(shellAssessmentForCall({call:{title:"run_command",kind:"execute",rawInput:{}},workspace:root}).risk,"unknown");
 });

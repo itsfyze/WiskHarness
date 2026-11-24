@@ -1,3 +1,57 @@
+# WiskHarness 0.7.4-beta.1 checkpoint
+
+## Outcome
+
+Full Access now approves routine workspace development work without repeated prompts. Installs, destructive commands, system changes, credential access, outside paths and unrecognized commands keep their approval or denial gates. Permission requests state the specific reason. The runtime and packaged desktop were rebuilt and verified; publication is still pending.
+
+## Root cause
+
+`authorizeNative` and the Goose ACP permission handler forced an `allow` decision to `ask` for MCP tools and for any shell command outside a narrow `ordinaryDevelopmentCommand` allowlist. That overrode Full Access and produced generic prompts. A follow-up review also found bypasses: ACP tool calls without `kind` skipped shell classification, `npm audit fix` was treated as read-only, protected PowerShell providers and inline data URLs were not checked, and an explicit tool-policy denial could surface the shell reason instead of the policy reason.
+
+## Changes
+
+- Added `classifyShellCommand` and `shellAssessmentForCall` in `security-policy.mjs` with routine, install, destructive, system, unknown, outside and sensitive outcomes.
+- Used one shell assessment in native and Goose ACP paths, including tool calls with no `kind`, and kept file-tool `command` values out of shell classification.
+- Flattened nested MCP arguments for path inspection; enabled MCP tools are allowed in Full Access unless a path is outside or protected.
+- Added specific denial and prompt reasons, mixed routine/protected command detection with `Run the routine steps separately`, and a `Blocked: <reason>` denial message.
+- Fixed `npm audit fix`/`--fix`, protected PowerShell providers, inline data URLs, and tool-policy reason ordering.
+- Added recovery hints for missing tools, bad paths, duplicate calls and compile/test failures; kept limits, cancellation and real blocker reporting.
+- Kept Vibe's system prompt intact with minimal WiskHarness additions; kept `default_agent = "ask"` and `default_approval_policy = "ask"` so ACP still gates non-Wisk tools.
+- Updated permission dialog copy, Full Access explanation, version metadata and changelog.
+
+## Verified results
+
+- `npm run check`: passed after the final hardening.
+- `npm test`: 26 tests, 25 passed, 1 skipped. The skip is the Vibe contract without staged resources.
+- `node --test tests/vibe-contract.test.mjs` with the full staged Vibe runtime: 4/4 passed.
+- Live Vibe/Ollama acceptance with Devstral-Small-2 24B: passed with 28 observed tool events and no permission events. It recovered from a planted syntax error, unavailable CMake, a controlled missing path and a wrong GUI import, then compiled, ran unit tests, packaged and verified the ZIP.
+- `node tests/stable-desktop.mjs` against the final unpacked build: passed the packaged Vibe, permission, metrics, review, file preview, terminal, model settings and theme persistence checks.
+- Controlled Portable updater lifecycle against the final candidate: rejected a bad download, showed progress, replaced the executable with the exact published hash, restarted automatically, and preserved settings and conversation bytes.
+- Version metadata in both final installers: `0.7.4-beta.1`.
+- Artifacts in `release/v0.7.4-beta.1`: `WiskHarness Portable 0.7.4-beta.1.exe`, `WiskHarness Setup 0.7.4-beta.1.exe`, `WiskHarness Uninstall 0.7.4-beta.1.exe`, `SHA256SUMS.txt`, `update-manifest.json`.
+- Verified SHA-256:
+  - Portable `ba2a18aaba1365a4aebff6c88c17e4b02dcd901f50ff1c1a4e6062d4cfe28c6b`
+  - Setup `3f9be4cdc07f36f4c5ce78cff13593b6cb2b8e0cc23f5be2df1f2c569227436e`
+
+## Limitations and blockers
+
+- GitHub CLI is not installed, so `gh auth status` could not run. Publishing requires the user to install and authenticate `gh`; no token was requested or stored.
+- The shipped `tests/updater-desktop.mjs` sets `WISK_UPDATE_TEST_FEED`, but current updater source does not read it. Updater verification used a disposable copy of the final unpacked build with a local-feed shim and fake installed version, while the real final Portable executable was the update candidate. The public GitHub feed cannot be exercised until the release exists.
+- The Setup updater was not rerun with a disposable NSIS test package. The portable lifecycle and unchanged updater unit tests were verified.
+- The build has no code-signing certificate; electron-builder skipped signing.
+- One post-hardening live acceptance attempt stopped after one text response with zero tool calls. The immediate rerun passed. The model run is nondeterministic; the passing evidence is the recorded result.
+
+## Open objectives
+
+- Create the local commit from the intended tracked files only, then provide exact PowerShell commands for push, annotated tag and release upload.
+- After publication, download all four public assets, verify the published hashes and exercise the real GitHub update feed.
+
+## Precise checkpoint
+
+The permission repair, regression tests, Vibe contract, live acceptance, Windows build, packaged launch, artifact hashes and controlled updater check are complete. No push, tag or release has been run. Personal `settings.json`, untracked artifacts and generated release directories are excluded from the commit. The next action is to stage the 14 intended tracked files, commit locally, record the hash in the Obsidian note, and hand the user exact publish commands.
+
+---
+
 # WiskHarness 0.7.3 development
 
 ## Current milestone

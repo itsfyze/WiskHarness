@@ -75,7 +75,7 @@ function request(url, address, signal) {
     const req=transport.get(url,{
       agent:agents[url.protocol], signal, maxHeaderSize:16384,
       lookup:(_host,options,callback)=>options.all ? callback(null,[address]) : callback(null,address.address,address.family),
-      headers:{"User-Agent":"WiskHarness/0.7.3 (https://github.com/itsfyze/WiskHarness)",
+      headers:{"User-Agent":"WiskHarness/0.7.4-beta.1 (https://github.com/itsfyze/WiskHarness)",
         Accept:"text/html, text/plain, text/markdown, application/json", "Accept-Encoding":"identity"}
     },resolve);
     req.once("error",reject);
