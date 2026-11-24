@@ -48,7 +48,7 @@ Full Access now approves routine workspace development work without repeated pro
 
 ## Precise checkpoint
 
-The permission repair, regression tests, Vibe contract, live acceptance, Windows build, packaged launch, artifact hashes and controlled updater check are complete. No push, tag or release has been run. Personal `settings.json`, untracked artifacts and generated release directories are excluded from the commit. The next action is to stage the 14 intended tracked files, commit locally, record the hash in the Obsidian note, and hand the user exact publish commands.
+The permission repair, regression tests, Vibe contract, live acceptance, Windows build, packaged launch, artifact hashes and controlled updater check are complete. Local code commit: `7b6e171a37801d2f2547a46f8b1180b666c968bd`. No push, tag or release has been run. Personal `settings.json`, untracked artifacts and generated release directories are excluded from the commit. The next action is to give the user exact publish commands, then verify the four public assets and real GitHub feed after publication.
 
 ---
 
