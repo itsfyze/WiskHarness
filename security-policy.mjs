@@ -163,3 +163,28 @@ export function permissionDecision(decision, scope, policy) {
   if (policy.permissionMode === "full") return "allow";
   return "ask";
 }
+
+export function ordinaryDevelopmentCommand(input, workspace, protectedPath=()=>false) {
+  const command=input?.command;
+  if(typeof command!=="string"||/[\r\n;&|><\x60$%!(){}[\]#^]/.test(command))return false;
+  if(/--(?:use-compress-program|checkpoint-action|to-command|init-script|settings-file|project-dir|include-build|output|config-env|execute|script)\b|^cmake(?:\.exe)?\s+-P\b/i.test(command))return false;
+  const args=command.trim().match(/"[^"]*"|'[^']*'|[^\s"']+/g)?.map(value=>value.replace(/^["']|["']$/g,""))||[];
+  const executable=args.shift()?.toLowerCase().replace(/\.exe$/,"");
+  if(!/^(?:get-command|get-location|get-childitem|get-content|test-path|write-output|where|dir|type|echo|python|py|cmake|ctest|ninja|gcc|g\+\+|clang|clang\+\+|cl|javac|java|node|npm|gradle|gradlew(?:\.bat)?|git|tar|compress-archive)$/.test(executable||""))return false;
+  if(["node","python","py"].includes(executable)&&args.some(value=>/^-(?:e|c|p).+|^--(?:eval|print|require|import)\b/i.test(value)))return false;
+  if(executable==="git"&&!["status","diff","log","show","rev-parse"].includes(args[0]))return false;
+  if(executable==="npm"&&!["run","test","--version","ls"].includes(args[0]))return false;
+  if(args.some(value=>/^(?:install|ci|add|download|publish|deploy|--install|--prefix|-enc(?:odedcommand)?|-e|-c|-r|-jar)$/i.test(value))&&
+      !(["python","py"].includes(executable)&&args[0]==="-m"&&args[1]==="zipfile")&&
+      !(["gcc","g++","clang","clang++"].includes(executable)&&args.includes("-c")))return false;
+  if(["python","py"].includes(executable)&&args[0]==="-m"&&!["py_compile","compileall","unittest","pytest","zipfile","tkinter"].includes(args[1]))return false;
+  return args.every(value=>{
+    if(/[:=@]/.test(value)||path.isAbsolute(value)||value.split(/[\\/]/).includes("..")||sensitivePath(value))return false;
+    if(!/[\\/\.]/.test(value)||value.startsWith("-"))return true;
+    try {
+      const target=resolveExistingParent(path.resolve(workspace,value));
+      const relative=path.relative(fs.realpathSync(workspace),target);
+      return relative!==".."&&!relative.startsWith(".."+path.sep)&&!path.isAbsolute(relative)&&!protectedPath(target)&&!sensitivePath(target);
+    }catch{return false;}
+  });
+}

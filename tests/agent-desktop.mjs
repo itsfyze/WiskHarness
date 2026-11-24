@@ -90,10 +90,6 @@ try{
   assert.equal(await page.locator('#home-workspace').getAttribute("title"),project);
   await page.locator('#chat-input').fill("Create and verify the desktop fixture.");
   await page.locator('#chat-send').click();
-  const permission=page.getByRole("dialog",{name:"Tool approval required"});
-  await permission.waitFor();
-  assert.match(await permission.innerText(),/Get-Content -LiteralPath desktop\.txt/);
-  await permission.getByRole("button",{name:"Allow once",exact:true}).click();
   await page.getByText("Desktop tool output verified.",{exact:true}).first().waitFor();
   assert.equal(await fs.readFile(path.join(project,"desktop.txt"),"utf8"),"Wisk desktop fixture");
   await assert.rejects(fs.stat(path.join(workspace,"desktop.txt")),{code:"ENOENT"});
@@ -107,7 +103,7 @@ try{
   if(problem)throw problem;
   assert.equal(rounds,3);
   assert.deepEqual(errors,[]);
-  console.log("Packaged desktop passed: project creation, per-chat workspace picker, real tool execution and shell approval, saved budget.");
+  console.log("Packaged desktop passed: project creation, per-chat workspace picker, real tool execution and prompt-free Full Access shell, saved budget.");
 }finally{
   if(app)await app.close();
   if(browser){

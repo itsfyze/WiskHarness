@@ -478,9 +478,9 @@ async function mountExecution(panel,onSaved) {
     if(!target.isConnected)return;
     target.innerHTML='<form><label class="field-label" for="agent-engine">Engine</label><select class="field" id="agent-engine">'+
       '<option value="ollama">Ollama native tools</option><option value="goose">Goose ACP (legacy)</option></select>'+
-      [["rounds","Model rounds",2,100],["calls","Tool calls",1,240],["minutes","Time limit in minutes",1,60]].map(([key,label,min,max])=>
+      [["rounds","Model rounds",2,160],["calls","Tool calls",1,400],["minutes","Time limit in minutes",1,90],["recovery","Recovery attempts without progress",2,15],["context","Maximum context tokens",4096,131072]].map(([key,label,min,max])=>
         '<label class="field-label" for="agent-budget-'+key+'">'+label+'</label><input class="field" type="number" id="agent-budget-'+key+'" min="'+min+'" max="'+max+'" value="'+budget[key]+'" required>').join("")+
-      '<p class="inline-help">Ollama uses all three limits. Goose uses the time limit and its own model and tool limits.</p><p role="status" data-status></p><button class="btn btn-primary">Save execution settings</button></form>';
+      '<p class="inline-help">Ollama uses these limits. Goose uses the time limit and its own model and tool limits.</p><p role="status" data-status></p><button class="btn btn-primary">Save execution settings</button></form>';
     target.querySelector("#agent-engine").value=engine;
     const form=target.querySelector("form");
     form.onsubmit=async event=>{
@@ -488,7 +488,7 @@ async function mountExecution(panel,onSaved) {
       const button=form.querySelector("button");button.disabled=true;
       try{
         await request("/api/agent/execution",{engine:form.querySelector("#agent-engine").value,budget:
-          Object.fromEntries(["rounds","calls","minutes"].map(key=>[key,form.querySelector("#agent-budget-"+key).valueAsNumber]))});
+          Object.fromEntries(["rounds","calls","minutes","recovery","context"].map(key=>[key,form.querySelector("#agent-budget-"+key).valueAsNumber]))});
         await onSaved();
       }catch(error){message(target,error.message)}
       finally{button.disabled=false}

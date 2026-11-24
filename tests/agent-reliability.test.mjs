@@ -68,8 +68,9 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
             message={tool_calls:[tool("file",'\"content\":\"The harness created this.\"}')],content:"<turn-context>INTERNAL_CANARY</turn-context>"};
           }
           if(count===3){assert.equal(toolResults.at(-1).ok,true);message={tool_calls:[finalText("incomplete","Wrote the file; readback is next.")]};}
-          if(count===4){assert.match(toolResults.at(-1).error,/Continue/);message={tool_calls:[tool("read_file",{path:"marker.txt"})]};}
-          if(count===5){
+          if(count===4){assert.match(toolResults.at(-1).error,/Continue/);message={tool_calls:[finalText("incomplete","Another premature summary.")]};}
+          if(count===5)message={tool_calls:[tool("read_file",{path:"marker.txt"})]};
+          if(count===6){
             assert.equal(toolResults.at(-1).text,"The harness created this.");
             message={tool_calls:[finish("Verified marker.txt.<turn-context>INTERNAL_CANARY</turn-context>")]};
           }
@@ -85,6 +86,15 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
           if(count===1)message={tool_calls:[tool("write_file",{path:outside,content:"must not write"})]};
           if(count===2){assert.match(toolResults.at(-1).error,/Blocked/);message={tool_calls:[tool("run_command",{shell:"powershell",command:"'NO' | Set-Content -LiteralPath denied-marker.txt"})]};}
           if(count===3){assert.match(toolResults.at(-1).error,/Permission denied/);message={tool_calls:[finalText("incomplete","Policy blocked the write and the command was declined.")]};}
+          break;
+        case "restricted":
+          if(count===1)message={tool_calls:[tool("run_command",{shell:"cmd",command:"echo RESTRICTED"})]};
+          if(count===2){assert.match(toolResults.at(-1).stdout,/RESTRICTED/);message={tool_calls:[finish("Verified approved output.")]};}
+          break;
+        case "stall":
+          if(count===1)message={tool_calls:[tool("run_command",{shell:"cmd",command:"cmake --invalid"})]};
+          if(count===2)message={tool_calls:[tool("run_command",{shell:"cmd",command:"cmake --invalid"})]};
+          if(count===3){assert.match(toolResults.at(-1).error,/already ran/);message={tool_calls:[finalText("incomplete","No meaningful progress.") ]};}
           break;
         case "cancel":
           message={tool_calls:[tool("run_command",{shell:"powershell",command:"Start-Sleep 60"})]};break;
@@ -165,10 +175,10 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   let approvals=0;
   const approve=async event=>{approvals++;await api("/api/agent/permission",{requestId:event.requestId,optionId:"allow"});};
   assert.equal((await run("Diagnose failed tool requests [case:recover]",{permission:approve})).done.stopReason,"end_turn");
-  assert.equal(approvals,2);
+  assert.equal(approvals,1);
   const deny=async event=>{approvals++;await api("/api/agent/permission",{requestId:event.requestId,optionId:"reject"});};
-  assert.equal((await run("Write outside and run a declined command [case:denied]",{permission:deny})).done.stopReason,"model_reported_incomplete");
-  assert.equal(approvals,3);
+  assert.equal((await run("Write outside and run a declined command [case:denied]",{permission:deny})).done.stopReason,"permission_blocked");
+  assert.equal(approvals,2);
   for(const file of [outside,path.join(workspace,"denied-marker.txt")])await assert.rejects(fs.stat(file),{code:"ENOENT"});
   const cancel=async(_event,id)=>{await api("/api/agent/cancel",{sessionId:id});};
   assert.equal((await run("Run a lengthy operation [case:cancel]",{permission:cancel})).done.stopReason,"cancelled");
@@ -184,6 +194,14 @@ test("Agent transport, turn lifecycle, workspace and permission regressions", {t
   const resumed=await run("Inspect the folder [case:budget]",{resumeId:limited.saved.id});
   assert.equal(resumed.done.stopReason,"end_turn");
   assert.equal(resumed.saved.messages.length,4);
+  await api("/api/agent/execution",{budget:{rounds:15,calls:20,minutes:2,recovery:3}});
+  const stalled=await run("Build a project [case:stall]");
+  assert.equal(stalled.done.stopReason,"recovery_stalled");
+  assert.equal(stalled.saved.messages.at(-1).tools.length,1);
+  await api("/api/security/mode",{mode:"ask"});
+  const beforeRestricted=approvals;
+  assert.equal((await run("Run a routine command [case:restricted]",{permission:approve})).done.stopReason,"end_turn");
+  assert.equal(approvals,beforeRestricted+1);
   const newFolder=path.join(root,"New Project With Spaces");
   await api("/api/projects",{path:newFolder,create:true},201);
   assert((await fs.stat(newFolder)).isDirectory());

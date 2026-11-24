@@ -62,9 +62,9 @@ function commandResult({shell,command,workspace,signal,redact,env}) {
     const operation=startTerminal({shell,command:script,workspace,redact,env,timeoutMs:120_000,update(run) {
       if (run.state==="running"&&!run.error?.includes("did not confirm")) return;
       signal.removeEventListener("abort",stop);
-      const tail=stream=>run.chunks.filter(chunk=>chunk.stream===stream).map(chunk=>chunk.text).join("").slice(-6000);
-      resolve({ok:run.state==="completed",exitCode:run.code,state:run.state,stdout:tail("stdout"),stderr:tail("stderr"),
-        ...(run.error?{error:run.error}:{}),truncated:run.truncated||run.chunks.reduce((size,chunk)=>size+chunk.text.length,0)>6000});
+      const output=stream=>run.chunks.filter(chunk=>chunk.stream===stream).map(chunk=>chunk.text).join("");
+      resolve({ok:run.state==="completed",exitCode:run.code,state:run.state,stdout:output("stdout"),stderr:output("stderr"),
+        ...(run.error?{error:run.error}:{}),truncated:run.truncated});
     }});
     signal.addEventListener("abort",stop,{once:true});
   });
@@ -117,7 +117,22 @@ export function createAgentTools({workspace,signal,secretProtection,redact,env,i
     });
   add("run_command","execute","Execute a foreground PowerShell or CMD command in the workspace. Use for tests, builds, git status/diff or process inspection. Returns exit code, stdout and stderr.",{
     shell:z.enum(["powershell","cmd"]),command:shellCommand
-  },args=>commandResult({...args,workspace,signal,redact,env}));
+  },async args=>{
+    const result=await commandResult({...args,workspace,signal,redact,env});
+    if(!result.ok||!/compress-archive|zipfile|\b(?:package|pack|tar|zip)\b|pyinstaller|electron-builder/i.test(args.command))return result;
+    const candidates=(args.command+" "+result.stdout).match(/"[^"]+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)"|'[^']+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)'|[^\s"'=:]+\.(?:zip|tar\.gz|tgz|exe|msi|whl|jar)\b/gi)||[];
+    const root=await fs.realpath(workspace);
+    const artifacts=[];
+    for(const candidate of new Set(candidates.slice(0,30))){
+      const file=await fs.realpath(path.resolve(root,candidate.replace(/^["']|["']$/g,""))).catch(()=>null);
+      if(!file||protectedPath(file)||secretProtection&&sensitivePath(file))continue;
+      const relative=path.relative(root,file);
+      if(relative===".."||relative.startsWith(".."+path.sep)||path.isAbsolute(relative))continue;
+      const stat=await fs.stat(file).catch(()=>null);
+      if(stat?.isFile()&&stat.size>0)artifacts.push({path:relative,bytes:stat.size});
+    }
+    return {...result,artifacts};
+  });
   if (internet) {
     const web=createAgentWeb({endpoint:internet.endpoint});
     add("search_web","other","Search public sources. Use only public keywords and cite returned source URLs.",{
@@ -147,7 +162,10 @@ export function createAgentTools({workspace,signal,secretProtection,redact,env,i
     }
     const serialized=JSON.stringify(result);
     if (redact) result=JSON.parse(JSON.stringify(result,(_key,value)=>typeof value==="string"?redact(value):value));
-    if (serialized.length>52_000) result={ok:result.ok,output:serialized.slice(0,24_000),truncated:true};
+    if(name==="run_command"&&serialized.length>52_000){
+      const excerpt=text=>text&&text.length>16000?text.slice(0,4000)+"\n[output truncated]\n"+text.slice(-12000):text;
+      result={...result,stdout:excerpt(result.stdout),stderr:excerpt(result.stderr),truncated:true};
+    }else if(serialized.length>52_000)result={ok:result.ok,output:serialized.slice(0,24_000),truncated:true};
     finish(result);
     return result;
   }

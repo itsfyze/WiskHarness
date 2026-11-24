@@ -2,9 +2,9 @@ import {Readable} from "node:stream";
 import {createInterface} from "node:readline";
 import {redactSecrets} from "./security-policy.mjs";
 
-export const defaultBudget = {rounds:32, calls:80, minutes:15};
+export const defaultBudget = {rounds:64, calls:140, minutes:25, recovery:6, context:32768};
 export function validateBudget(input = {}) {
-  const limits = {rounds:[2,100], calls:[1,240], minutes:[1,60]};
+  const limits = {rounds:[2,160], calls:[1,400], minutes:[1,90], recovery:[2,15], context:[4096,131072]};
   return Object.fromEntries(Object.entries(limits).map(([key,[min,max]]) => {
     const value = input[key] ?? defaultBudget[key];
     if (!Number.isInteger(value) || value < min || value > max) throw new Error(key + " must be between " + min + " and " + max);
@@ -75,7 +75,7 @@ export async function ollamaRound({endpoint, model, messages, tools, format, con
 }
 
 const completion = {
-  type:"function", function:{name:"finish_task", description:"End the turn with the result. Use incomplete if work, permissions or verification remain outstanding. For a text-only question, report the answer with status answered.",
+  type:"function", function:{name:"finish_task", description:"End the turn with the result. Use incomplete only for a concrete blocker that cannot be resolved with available tools. For a text-only question, report the answer with status answered.",
     parameters:{type:"object", additionalProperties:false, required:["status","summary"], properties:{
       status:{type:"string",enum:["completed","incomplete","answered"]}, summary:{type:"string",minLength:1,maxLength:12000}
     }}
@@ -83,7 +83,7 @@ const completion = {
 };
 
 export async function runOllamaAgent({endpoint, model, capabilities, contextTokens, budget, history, prompt, instructions, tools, signal, onMetrics, onText, onStatus, execute, checkpoint, onCheckpoint=()=>{}}) {
-  const context = Math.min(contextTokens || capabilities.modelContext || 32768, capabilities.trainedContext || Infinity);
+  const context = Math.min(contextTokens || capabilities.modelContext || defaultBudget.context, budget.context || defaultBudget.context, capabilities.trainedContext || Infinity);
   const allowance = Math.max(3500,(context - Math.min(8192, Math.floor(context/3))) * 2);
   const base = [
     {role:"system",content:instructions},
@@ -127,12 +127,30 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
     id,label,evidence:checkpoint?.checklist?.find(item=>item.id===id)?.evidence||null
   }));
   const outstanding=()=>checklist.filter(item=>!item.evidence);
-  let lastProgress=checkpoint?.lastProgress||null, retryProgress=-1, correction="";
+  let lastProgress=checkpoint?.lastProgress||null, correction="", recovery=0, compacted=0;
+  let lastFailure="";
+  const started=performance.now();
+  const pendingReadbacks=new Set();
+  const recoveryLimit=budget.recovery||defaultBudget.recovery;
+  const commandObjectives=command=>({
+    build:!/\b(?:--version|-version)\b|^(?:get-|where|test-path)/i.test(command)&&/py_compile|(?:^|\s)(?:g\+\+|clang\+\+)(?:\.exe)?(?:\s|$)|\b(?:compile|build|javac|csc|ninja|gcc|clang)\b/i.test(command),
+    test:!/^(?:get-|where|test-path)/i.test(command)&&/\b(?:unittest|pytest|tests?|ctest)\b/i.test(command.replace(/\b(?:app|test|tests)[\\/]\S+/g,"")),
+    package:/compress-archive|zipfile|\b(?:package|pack|tar|zip)\b|pyinstaller|electron-builder/i.test(command)
+  });
+  const actionKey=(name,input)=>JSON.stringify([name,Object.entries(input??{}).sort(([a],[b])=>a.localeCompare(b))]);
+  let blockedReason=null;
   const publish=(round,calls,stop,tokens)=>onCheckpoint({checklist,lastProgress,rounds:round,calls,
-    protocol:compatible?"json":"native",providerStop:stop,context,tokens});
+    protocol:compatible?"json":"native",providerStop:stop,context,tokens,recovery,recoveryLimit,compacted,elapsedMs:Math.round(performance.now()-started),limits:budget});
   publish(0,0,null);
-  let callCount=0, successCount=0, noCalls=0, lastActionFailed=false, needsVerification=false, permissionBlocked=false;
-  const finishIncomplete = (message,reason) => {onText(message);return reason;};
+  let callCount=0, successCount=0, noCalls=0, lastActionFailed=false, needsVerification=false;
+  let workspaceRevision=0;
+  function recover(reason) {
+    recovery++;
+    correction="\nRecovery required: "+reason+
+      " Read the latest diagnostics. Try a different authorized action. For a missing command, check Get-Command and locally installed tools, then resolve the path or choose an available build tool. For compile or test failures, inspect the failing file, fix it and rerun the check. Ask before dependency installation.";
+  }
+  let lastRound=0,lastStop=null,lastTokens;
+  const finishIncomplete = (message,reason) => {publish(lastRound,callCount,lastStop,lastTokens);onText(message);return reason;};
   for (let round=0; round<budget.rounds; round++) {
     signal.throwIfAborted();
     const included=[];
@@ -143,16 +161,24 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
       included.unshift(...group.messages);
       used=next;
     }
+    compacted=Math.max(compacted,(compatible?structuredGroups:groups).length-(compatible?included.length/2:included.filter(message=>message.role==="assistant").length));
     const retry = noCalls?"\nThe previous response did not contain a valid tool action. Continue the current objective with a registered call or finish_task. Printed commands never execute.":"";
     const pending=outstanding().map(item=>item.label).join("; ");
     const system={role:"system",content:(compatible?compatibilityInstructions:base[0].content)+retry+
       (pending?"\nOutstanding objectives: "+pending+". Continue with real tools while actionable work remains.": "")+
       (lastProgress?"\nLast observed progress: "+lastProgress:"")+
+      (lastFailure?"\nLatest failure evidence: "+lastFailure:"")+
+      (checklist.some(item=>item.evidence)?"\nVerified checklist evidence: "+JSON.stringify(checklist.filter(item=>item.evidence)):"")+
       (checkpoint?"\nThis task resumed from a saved checkpoint. Inspect the current workspace and reverify outputs before completing.":"")+correction};
     const step = await ollamaRound({endpoint,model,context,...(compatible?{format}:{tools:catalog}),signal,onMetrics,
       messages:[system,...clipHistory,base[1],...included]});
-    publish(round+1,callCount,step.stop,{input:step.promptTokens,output:step.outputTokens});
-    if(step.stop==="length")return finishIncomplete("Ollama reached its output token limit. Continue with smaller tool inputs.","model_output_limit");
+    lastRound=round+1;lastStop=step.stop;lastTokens={input:step.promptTokens,output:step.outputTokens};
+    publish(lastRound,callCount,lastStop,lastTokens);
+    if(step.stop==="length"){
+      recover("Ollama truncated its last response. Issue a single small tool call, or write a large file in smaller edits.");
+      if(recovery>=recoveryLimit)return finishIncomplete("Repeated model output limits prevented progress.","model_output_limit");
+      continue;
+    }
     if (compatible) {
       step.calls=[];
       try {
@@ -171,7 +197,8 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
         onStatus("The model returned prose instead of native tool calls. Trying structured JSON compatibility mode.");
         continue;
       }
-      if (noCalls>=3) {
+      recover("The model returned no usable tool call.");
+      if (noCalls>=recoveryLimit || recovery>=recoveryLimit) {
         return finishIncomplete("The model ended without a structured completion. Review the tool results above and continue the task with a tool-capable model if needed.","no_structured_action");
       }
       continue;
@@ -192,45 +219,68 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
         if (!valid) result={ok:false,error:"Call finish_task by itself with a valid status and summary."};
         else if (status==="completed" && (successCount===0 || lastActionFailed || needsVerification || outstanding().length)) result={ok:false,error:"Completion needs successful tool evidence. Read back changed files or run checks after the last mutation. Report outstanding failures as incomplete."};
         else if (status==="answered" && (callCount>0 || needsExecution || checklist.length)) result={ok:false,error:"This task requires execution. Use tools and verify the work, or report incomplete."};
-        else if(status==="incomplete" && !permissionBlocked && successCount>0 && retryProgress!==successCount){
-          retryProgress=successCount;
-          correction="\nThe previous summary was intermediate progress. Execute the next implementation or verification tool. State a concrete blocker only if no authorized action can proceed.";
-          result={ok:false,error:"Work remains. Continue with the next concrete tool action."};
+        else if(status==="incomplete"){
+          if(blockedReason){onText(summary+"\n\nPermission boundary: "+blockedReason);return "permission_blocked";}
+          result={ok:false,error:"Work remains. Continue with the next concrete tool action or find a different recovery strategy."};
         }
-        else {onText(summary);return status==="incomplete"?"model_reported_incomplete":"end_turn";}
+        else {onText(summary);return "end_turn";}
+        if(!result.ok)recover(result.error);
       } else {
         if (callCount>=budget.calls) {
           return finishIncomplete("Tool call limit reached. Review the saved actions and continue from the current workspace state.","max_tool_calls");
         }
         callCount++;
-        const signature=JSON.stringify([name,Object.entries(input ?? {}).sort(([a],[b])=>a.localeCompare(b))]);
-        const attempts=seen.get(signature) || 0;
-        seen.set(signature,attempts+1);
+        const command=typeof input?.command==="string"?input.command:"";
+        const signature=actionKey(name,input);
+        const previous=seen.get(signature);
+        const duplicate=previous?.revision===workspaceRevision;
         result=invalid?{ok:false,error:"Invalid JSON arguments. Send a valid argument object."}:
-          attempts>=2?{ok:false,error:"Repeated identical request blocked. Use the prior result or change the input."}:await execute(name,input);
+          duplicate?{ok:false,error:"This action already ran with the same inputs and workspace state. Use the prior result or try a different operation.",previous:previous.result}:
+          await execute(name,input);
         lastActionFailed=!result.ok;
-        permissionBlocked=!result.ok&&/permission denied|permission policy/i.test(String(result.error));
-        if (!result.ok && name==="write_file" && /EEXIST/.test(String(result.error))) {
+        const permissionFailure=!result.ok&&/permission denied|permission policy/i.test(String(result.error));
+        if(permissionFailure)blockedReason=result.error;
+        if(!result.ok && name==="write_file" && /EEXIST/.test(String(result.error))) {
           result.error += " Read the existing file and use edit_file with exact before and after text.";
         }
+        const mutation=["write_file","edit_file","create_directory"].includes(name);
+        if(result.ok && (mutation || name==="run_command"&&(commandObjectives(command).build||commandObjectives(command).package)))workspaceRevision++;
+        if(!duplicate)seen.set(signature,{revision:workspaceRevision,result:{ok:result.ok,exitCode:result.exitCode,error:result.error}});
         if (result.ok) {
+          blockedReason=null;
           successCount++;
           correction="";
-          const command=String(input.command||"");
-          const matches={
-            source:["write_file","edit_file"].includes(name)&&/\.(?:py|js|ts|jsx|tsx|java|cs|rs|go|c|cpp|html|css|ps1)$/i.test(String(input.path)),
-            build:name==="run_command"&&/py_compile|\bcompile\b|\bbuild\b|\bjavac\b|\bcsc\b/i.test(command),
-            test:name==="run_command"&&/unittest|pytest|\btest\b|ctest/i.test(command),
-            package:name==="run_command"&&/compress-archive|zipfile|\bpackage\b|\bpack\b|pyinstaller|electron-builder/i.test(command)
+          lastProgress=(name+" "+String(input?.path||command)).slice(0,420);
+          const matches={...commandObjectives(command),package:result.artifacts?.length>0,
+            source:["write_file","edit_file"].includes(name)&&/\.(?:py|js|ts|jsx|tsx|java|cs|rs|go|c|cpp|html|css|ps1)$/i.test(String(input?.path)),
           };
-          lastProgress=(name+" "+String(input.path||command)).slice(0,420);
+          if(matches.source){
+            for(const item of checklist)if(item.id!=="source")item.evidence=null;
+          }
           for(const item of checklist)if(matches[item.id])item.evidence=lastProgress;
-          if (["write_file","edit_file","create_directory"].includes(name)) needsVerification=true;
-          if (["read_file","run_command"].includes(name)) needsVerification=false;
+          if (mutation || name==="run_command" || checklist.some(item=>item.evidence===lastProgress))recovery=0;
+          if (mutation) {
+            needsVerification=true;
+            if(name!=="create_directory")pendingReadbacks.add(input.path);
+          }
+          if(name==="read_file")pendingReadbacks.delete(input.path);
+          if(name==="run_command"&&(matches.build||matches.test||matches.package))pendingReadbacks.clear();
+          if((name==="read_file"||name==="run_command"&&(matches.build||matches.test||matches.package))&&!pendingReadbacks.size)needsVerification=false;
+        } else {
+          const headline=String(result.error||result.stderr||result.stdout||"Tool failed").slice(0,1600);
+          lastFailure=name+" "+command.slice(0,220)+": "+headline;
+          const failed=commandObjectives(command);
+          if(!duplicate)for(const item of checklist)if(failed[item.id])item.evidence=null;
+          recover(headline);
         }
         publish(round+1,callCount,step.stop,{input:step.promptTokens,output:step.outputTokens});
       }
       messages.push({role:"tool",tool_name:name,content:JSON.stringify(result)});
+      if(recovery>=recoveryLimit){
+        publish(round+1,callCount,step.stop,{input:step.promptTokens,output:step.outputTokens});
+        if(blockedReason)return finishIncomplete("Permission boundary: "+blockedReason,"permission_blocked");
+        return finishIncomplete("Recovery limit reached without progress. "+(lastFailure||result.error),"recovery_stalled");
+      }
     }
     const structuredMessages=compatible?[
       {role:"assistant",content:JSON.stringify({name:step.calls[0].name,arguments:step.calls[0].input})},

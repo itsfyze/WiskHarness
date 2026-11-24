@@ -345,7 +345,17 @@ function renderChats(){
       const details=document.createElement("section");
       if(s.task.stopReason){const reason=document.createElement("p");reason.textContent="Stop reason: "+s.task.stopReason.replaceAll("_"," ");details.append(reason)}
       const progress=s.task.checkpoint;
-      if(progress){const line=document.createElement("p");line.textContent=`${progress.rounds} model rounds · ${progress.calls} tool calls`+(progress.providerStop?` · Ollama stop: ${progress.providerStop}`:"");details.append(line)}
+      if(progress){
+        const line=document.createElement("p");
+        const used=(amount,limit)=>limit?amount+"/"+limit:amount;
+        const limits=progress.limits;
+        const parts=[used(progress.rounds,limits?.rounds)+" model rounds",used(progress.calls,limits?.calls)+" tool calls"];
+        if(progress.recoveryLimit)parts.push(used(progress.recovery,progress.recoveryLimit)+" recovery attempts",
+          Math.round(progress.elapsedMs/1000)+" s elapsed",used(progress.tokens?.input??0,progress.context)+" input context tokens");
+        if(progress.providerStop)parts.push("Ollama stop: "+progress.providerStop);
+        line.textContent=parts.join(" · ");
+        details.append(line);
+      }
       const goals=document.createElement("ul");
       for(const item of s.task.checkpoint?.checklist||[]){
         const entry=document.createElement("li");entry.textContent=item.label+" · "+(item.evidence?"Observed: "+item.evidence:"Outstanding");goals.append(entry);

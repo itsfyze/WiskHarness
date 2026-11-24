@@ -22,7 +22,10 @@ const setupDir = path.join(root, "Installation With Spaces");
 const target = path.join(kind === "setup" ? setupDir : root, "WiskHarness.exe");
 const status = path.join(profile, "update-result.txt");
 const log = path.join(profile, "desktop-runtime.log");
-const version = "0.7.3-beta.6";
+const publicFeed=process.argv.includes("--public-feed");
+const version=publicFeed?"0.7.3-beta.7":"0.7.3-beta.6";
+const previousVersion=publicFeed?"0.7.3-beta.6":"0.7.3-beta.5";
+assert(!publicFeed||kind==="portable","The public-feed test uses the production Portable packages.");
 const filename = "WiskHarness." + (kind === "setup" ? "Setup" : "Portable") + "." + version + ".exe";
 const candidate = path.resolve(newer);
 const size = (await fs.stat(candidate)).size;
@@ -134,12 +137,13 @@ try {
   assert.match(conversation,/Saved updater conversation/);
   await page.locator('[data-view="settings"]').click();
   const card = page.locator("#update-settings");
-  await card.getByText("0.7.3-beta.5",{exact:true}).waitFor();
+  await card.getByText(previousVersion,{exact:true}).waitFor();
   await card.getByRole("button",{name:"Check now"}).click();
   await card.getByText(version,{exact:true}).waitFor();
   await card.getByText("Release notes",{exact:true}).click();
-  await card.getByText("Updater QA release notes.").waitFor();
+  if(!publicFeed)await card.getByText("Updater QA release notes.").waitFor();
   const settings = await fs.readFile(path.join(config,"settings.json"),"utf8");
+  if(!publicFeed){
   await card.getByRole("button",{name:"Update",exact:true}).click();
   await card.getByText(/Update failed.*size or checksum/).waitFor();
   assert.equal(launcher.exitCode,null);
@@ -150,19 +154,20 @@ try {
   await card.getByRole("button",{name:"Retry update"}).click();
   await card.locator('progress[value]:not([value="0"])').waitFor();
   await card.getByText(/MB remaining.*MB\/s/).waitFor();
+  }else await card.getByRole("button",{name:"Update",exact:true}).click();
   await waitFor(() => launcher.exitCode !== null,"baseline shutdown");
   await waitFor(async() => {
     const outcome = await fs.readFile(status,"utf8").catch(()=>null);
     if (outcome && outcome !== "success") throw new Error(outcome);
     return outcome === "success";
   },"updated app window and version confirmation",240000);
-  assert.equal(downloads,2);
+  assert.equal(downloads,publicFeed?0:2);
   assert.equal(await fs.readFile(session,"utf8"),conversation);
   assert.equal(await fs.readFile(path.join(config,"settings.json"),"utf8"),settings);
   assert(isolatedAppPids().some(pid => pid !== launcher.pid),"The new process should be running");
   if (kind === "portable") assert.equal(await sha256(target),digest);
   assert.match(await fs.readFile(log,"utf8"),new RegExp("Installing verified "+kind+" update"));
-  console.log(kind + ": observed progress, original process exit, in-place update, automatic restart to beta.6, and unchanged settings and conversation.");
+  console.log(kind + ": observed progress, original process exit, in-place update, automatic restart to " + version + ", and unchanged settings and conversation.");
 } catch (error) {
   console.error("Disposable test profile: "+root);
   console.error(await fs.readFile(log,"utf8").catch(()=>"No desktop log"));

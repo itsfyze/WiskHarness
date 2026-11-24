@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3-beta.7
+
+- Continue through interim summaries and ordinary tool failures within bounded recovery and execution budgets.
+- Run routine workspace development commands without repeated prompts in Full Access. Keep approval for other shell operations.
+- Track recovery use, context, and verified packaging evidence in task checkpoints.
+
 ## 0.7.3-beta.6
 
 - Download and verify updates in the background, then install and restart WiskHarness.

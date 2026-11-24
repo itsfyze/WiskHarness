@@ -40,6 +40,12 @@ The backend gets release metadata directly from the official GitHub Releases API
 
 Electron hands off to a bundled Windows runner after the backend confirms no agent, terminal, Git mutation or model unload is active. The runner waits for Electron to exit, rechecks the hash, applies the package and confirms the new Electron window and local backend start at the target version. Setup updates use the existing install directory. Portable replacement uses an adjacent backup and requires a writable filesystem that supports Windows file replacement. If the new Portable process exits before confirming startup, the runner attempts to restore the backup. If automatic restoration is unavailable, the runner reports the backup path. App settings and conversation files stay in the same profile.
 
+## Agent recovery and permissions
+
+Ollama Agent tracks bounded retries, actual tool results, completion evidence and the last provider stop reason. Configure rounds, calls, duration, recovery attempts and context in Settings. Continue Task remains available after interruption or a stop. Goose ACP receives the same shell approval decision when it forwards a request. Goose controls its own inference loop and uses the WiskHarness time limit. Plan has no execution tools.
+
+In Full Access, routine workspace inspections, compiler and test invocations can run without prompting. A command composition, dependency installation or explicit external path requires separate approval or is blocked by policy. Build and test tools run project code with the current Windows account permissions.
+
 ## Verify the beta build
 
 Run npm tests for the ordinary regression suite. The following manual checks require their external runtimes and create disposable profiles.

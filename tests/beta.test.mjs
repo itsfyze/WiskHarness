@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { assessTool,permissionScope,permissionDecision,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
+import { assessTool,ordinaryDevelopmentCommand,permissionScope,permissionDecision,redactSecrets,securityDefaults,securitySettings } from "../security-policy.mjs";
 import { credentialStore,parseModelRef,providerClient,providerConfig } from "../providers.mjs";
 import { workspaceGit } from "../git-workspace.mjs";
 
@@ -160,4 +160,15 @@ test("Full access automatically approves Goose shell and opaque tools while reta
     ...policy,toolPolicies:{...policy.toolPolicies,execute:"deny"}
   }});
   assert.equal(permissionDecision(restricted,scope,policy),"deny");
+});
+
+test("Full Access recognizes routine workspace commands without approving shell composition or installs", t=>{
+  const root=temporary(t);
+  const check=command=>ordinaryDevelopmentCommand({command},root);
+  for(const command of ["Get-Command cmake", "Get-Content app/main.py", "where.exe python",
+    "python -m py_compile app/main.py","python -m unittest discover -s tests -v",
+    "python -m zipfile -c dist/release.zip app README.md","cmake --build build","npm run build","git status","dir"])assert(check(command),command);
+  for(const command of ["npm install","cmake -P local.cmake","python -c code","node --eval expression",
+    "Get-Content ../outside.txt","Get-Content .env","git push","dir & del *","tar --checkpoint-action=exec",
+    "Start-Process powershell","del project.txt","Get-Content C:/outside.txt"])assert(!check(command),command);
 });
