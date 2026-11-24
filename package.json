@@ -1,7 +1,7 @@
 {
   "name": "wiskharness",
   "private": true,
-  "version": "0.7.3-beta.5",
+  "version": "0.7.3-beta.6",
   "type": "module",
   "main": "desktop/electron-main.cjs",
   "description": "Self-hosted Windows coding assistant with local and cloud Plan models",
@@ -77,6 +77,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "runtime-staging/WiskHarness Update.exe",
+        "to": "WiskHarness Update.exe"
       }
     ],
     "win": {

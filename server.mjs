@@ -47,7 +47,7 @@ const GOOSE_ROOT=path.join(CONFIG_DIR,"local-data","goose");
 const gooseSources=["auto","system","portable","custom"];
 const gooseStatus=()=>gooseRuntime.status(settings.gooseRuntime);
 const defaultWorkspace=path.resolve(process.env.LOCAL_AGENT_WORKSPACE||path.join(os.homedir(),"Documents","WiskHarness Projects"));
-const DEFAULTS={agentBudget:defaultBudget,agentEngine:"ollama",permissionMode:"ask",permissionRules:[],model:null,setupComplete:false,updateAutomatic:true,updateChannel:"stable",lastUpdateCheck:null,...securityDefaults,usageMeasurements:true,contextTokens:null,vault:null,visible:null,knownModels:null,workspace:defaultWorkspace,unloadPrevious:true,autoDiscover:true,projects:[],legacyImportHashes:[]};
+const DEFAULTS={agentBudget:defaultBudget,agentEngine:"ollama",permissionMode:"ask",permissionRules:[],model:null,setupComplete:false,updateAutomatic:true,updateChannel:VERSION.includes("-")?"beta":"stable",lastUpdateCheck:null,...securityDefaults,usageMeasurements:true,contextTokens:null,vault:null,visible:null,knownModels:null,workspace:defaultWorkspace,unloadPrevious:true,autoDiscover:true,projects:[],legacyImportHashes:[]};
 let settings={...DEFAULTS};
 let settingsError=null;
 try{settings={...DEFAULTS,...JSON.parse(fs.readFileSync(SETTINGS,"utf8"))}}
@@ -55,6 +55,8 @@ catch(error){if(error.code!=="ENOENT")settingsError="Existing settings could not
 if (!permissionModes.includes(settings.permissionMode)||settings.permissionMode==="full"&&!nonce.length) settings.permissionMode="ask";
 settings.permissionRules=Array.isArray(settings.permissionRules)?settings.permissionRules:[];
 const vault=()=>process.env.LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT==="1"?null:process.env.LOCAL_AGENT_OBSIDIAN_VAULT||settings.vault||null;
+let installingUpdate=false, updateInstallError=null;
+const desktopUpdates=!!(process.send && process.env.WISKHARNESS_UPDATE_STATUS);
 const updater=createUpdater({version:VERSION,directory:path.join(CONFIG_DIR,"updates"),kind:process.env.WISKHARNESS_PACKAGE_KIND});
 settings.workspace=path.resolve(settings.workspace||defaultWorkspace);
 const sourceWorkspace=path.resolve(os.homedir(),"Documents","Local Agent Harness");
@@ -90,6 +92,7 @@ app.use((req,res,next)=>{
   }
   if(req.get("sec-fetch-site")==="cross-site")return res.status(403).json({error:"Cross-site requests are blocked"});
   if(!["GET","HEAD","OPTIONS"].includes(req.method)){
+    if(installingUpdate)return res.status(409).json({error:"WiskHarness is installing an update"});
     const origin=req.get("origin");
     const expected="http://"+HOST+":"+PORT;
     if(origin&&origin!==expected&&origin!=="http://localhost:"+PORT)return res.status(403).json({error:"Cross-origin changes are blocked"});
@@ -986,7 +989,7 @@ function reportNative(record,reply,name,kind,input){
 }
 
 async function run(req,res){
-  if(busy||terminal||gitMutating||unloadPending||updater.status().download?.state==="running")return fail(res,new Error("Finish the active task, terminal, Git change, model unload or download first"),409);
+  if(busy||terminal||gitMutating||unloadPending)return fail(res,new Error("Finish the active task, terminal, Git change or model unload first"),409);
   let prompt=String(req.body?.prompt||"").trim();
   let record;
   try{
@@ -1292,7 +1295,18 @@ app.post("/api/models/context",(req,res)=>{
 const updateStatus=()=>{
   const result=updater.status();
   const current=result.channel===settings.updateChannel;
-  return {...result,latest:current?result.latest:null,available:current&&result.available,lastSuccessfulCheck:result.checkedAt||settings.lastUpdateCheck,automatic:settings.updateAutomatic,channel:settings.updateChannel};
+  let previousFailure=null;
+  if(desktopUpdates){
+    try{
+      const outcome=fs.readFileSync(process.env.WISKHARNESS_UPDATE_STATUS,"utf8");
+      if(outcome!=="success")previousFailure=outcome;
+    }catch{}
+  }
+  const {path:_path,sha256:_sha256,...download}=result.download||{};
+  return {...result,download:current&&result.download&&(!download.version||download.version===result.latest?.version)?download:null,installing:installingUpdate,
+    installError:updateInstallError||previousFailure,desktopUpdates,
+    latest:current?result.latest:null,available:current&&result.available,
+    lastSuccessfulCheck:result.checkedAt||settings.lastUpdateCheck,automatic:settings.updateAutomatic,channel:settings.updateChannel};
 };
 async function checkUpdates(force){
   const result=await updater.check(settings.updateChannel,force);
@@ -1304,19 +1318,55 @@ async function checkUpdates(force){
 app.get("/api/updates",(_req,res)=>res.json(updateStatus()));
 app.post("/api/updates/preferences",(req,res)=>{
   if(!["stable","beta"].includes(req.body?.channel)||typeof req.body?.automatic!=="boolean")return fail(res,new Error("Invalid update preferences"),400);
+  if(updater.downloading())return fail(res,new Error("Wait for the download to finish before changing the channel"),409);
   settings.updateChannel=req.body.channel;settings.updateAutomatic=req.body.automatic;saveSettings();res.json(updateStatus());
 });
 app.post("/api/updates/check",async(_req,res)=>{
   await checkUpdates(true);
   res.json(updateStatus());
 });
-app.post("/api/updates/download",async(_req,res)=>{
-  if(busy||terminal)return fail(res,new Error("Finish active work before downloading an update"),409);
-  if(!updater.status().available||!updater.status().latest?.asset)return fail(res,new Error("No verified update is available"),409);
-  if(updater.status().download?.state==="running")return fail(res,new Error("An update is already downloading"),409);
-  if(updater.status().channel!==settings.updateChannel)return fail(res,new Error("Check the current release channel first"),409);
-  void updater.download().catch(error=>console.error(safe(error)));
+function installUpdate(){
+  if(!desktopUpdates)throw new Error("Automatic installation requires a packaged WiskHarness app.");
+  if(installingUpdate)throw new Error("An update is already installing.");
+  if(busy||terminal||gitMutating||unloadPending)throw new Error("Finish or cancel active work, then select Install and restart.");
+  const {download,latest,channel,available}=updater.status();
+  if(download?.state!=="verified"||!available||channel!==settings.updateChannel||download.version!==latest?.version)
+    throw new Error("Download a verified update for the selected channel first.");
+  installingUpdate=true;
+  updateInstallError=null;
+  process.send({type:"install-update",path:download.path,version:download.version,sha256:download.sha256},error=>{
+    if(error){
+      installingUpdate=false;
+      updateInstallError="Could not start the desktop updater. Try again.";
+    }
+  });
+}
+process.on("message",message=>{
+  if(message?.type==="update-error"){
+    installingUpdate=false;
+    updateInstallError=message.error;
+  }
+});
+app.post("/api/updates/download",(_req,res)=>{
+  const status=updater.status();
+  if(!desktopUpdates||status.checking||!status.available||!status.latest?.asset||status.channel!==settings.updateChannel)
+    return fail(res,new Error("Check the selected channel for a verified desktop update first"),409);
+  if(updater.downloading())return fail(res,new Error("An update is already downloading"),409);
+  updateInstallError=null;
+  try{fs.rmSync(process.env.WISKHARNESS_UPDATE_STATUS,{force:true})}catch{}
+  void (async()=>{
+    try{
+      const result=await updater.download();
+      if(result.download?.state==="verified")installUpdate();
+    }catch(error){updateInstallError=safe(error)}
+  })();
   res.status(202).json(updateStatus());
+});
+app.post("/api/updates/install",(_req,res)=>{
+  try{
+    installUpdate();
+    res.status(202).json(updateStatus());
+  }catch(error){fail(res,error,409)}
 });
 
 function withAgentSession(handler){
@@ -1330,7 +1380,7 @@ function withAgentSession(handler){
   };
 }
 app.post("/api/sessions/:id/terminal",withAgentSession((req,res,session)=>{
-  if(busy||terminal||gitMutating||updater.status().download?.state==="running")return fail(res,new Error("Finish active work first"),409);
+  if(busy||terminal||gitMutating)return fail(res,new Error("Finish active work first"),409);
   const {shell,command}=req.body||{};
   if(!["powershell","cmd"].includes(shell)||typeof command!=="string"||!command.trim()||command.length>8000||command.includes("\0")||req.body.confirmed!==true)return fail(res,new Error("Enter and confirm the command before running it"),400);
   let lastWrite=0;

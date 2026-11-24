@@ -22,6 +22,7 @@ export function selectRelease(releases, channel, kind = "setup") {
       item.browser_download_url === downloadRoot + encodeURIComponent(item.name) && Number.isSafeInteger(item.size) && item.size > 0 &&
       item.size <= maxSize && /^sha256:[a-f0-9]{64}$/i.test(item.digest || ""));
     return [{ version, notes: releaseRoot + "/tag/" + release.tag_name,
+      summary: typeof release.body === "string" ? release.body.slice(0, 6000) : "",
       asset: asset ? { name, url: asset.browser_download_url, size: asset.size, sha256: asset.digest.slice(7).toLowerCase() } : null }];
   });
   return eligible.sort((a, b) => semver.rcompare(a.version, b.version))[0] ?? null;
@@ -30,12 +31,14 @@ export function selectRelease(releases, channel, kind = "setup") {
 export function createUpdater({ version, directory, kind, fetcher = fetch }) {
   let state = { version, latest: null, checkedAt: null, error: null, download: null };
   let checking;
+  const downloading = () => ["running", "verifying"].includes(state.download?.state);
   let attemptedAt = 0;
   async function check(channel, force = false) {
     if (checking) return checking;
+    if (downloading()) return state;
     if (state.channel === channel && Date.now() - attemptedAt < (force ? 8000 : 6 * 3600 * 1000)) return state;
     attemptedAt = Date.now();
-    state = { ...state, channel, latest: null, available: false };
+    state = { ...state, channel, latest: null, available: false, checking: true };
     checking = (async () => {
       try {
         const response = await fetcher(api, { redirect: "error", headers: { Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(10000) });
@@ -50,12 +53,13 @@ export function createUpdater({ version, directory, kind, fetcher = fetch }) {
       return state;
     })();
     try { return await checking; }
-    finally { checking = null; }
+    finally { checking = null; state.checking = false; }
   }
 
   async function download() {
-    if (state.download?.state === "running") throw new Error("An update is downloading already");
-    const asset = state.available && state.latest?.asset;
+    if (downloading()) throw new Error("An update is downloading already");
+    const latest = state.latest;
+    const asset = !checking && state.available && latest?.asset;
     if (!asset) throw new Error("A verified asset is unavailable");
     state = { ...state, download: { state: "running", bytes: 0, total: asset.size } };
     let temporary, file;
@@ -76,19 +80,23 @@ export function createUpdater({ version, directory, kind, fetcher = fetch }) {
       file = await fs.promises.open(temporary, "wx");
       const hash = createHash("sha256");
       let bytes = 0;
+      const started = performance.now();
       for await (const chunk of response.body) {
         bytes += chunk.length;
         if (bytes > asset.size) throw new Error("Download exceeded the expected size");
         hash.update(chunk);
         await file.writeFile(chunk);
         state.download.bytes = bytes;
+        state.download.bytesPerSecond = Math.round(bytes * 1000 / Math.max(1, performance.now() - started));
       }
+      state.download.state = "verifying";
+      await file.sync();
       if (bytes !== asset.size || hash.digest("hex") !== asset.sha256) throw new Error("Download size or checksum did not match");
       await file.close();
       file = null;
       const destination = path.join(directory, asset.name);
       await fs.promises.rename(temporary, destination);
-      state = { ...state, download: { state: "verified", bytes, total: asset.size, path: destination } };
+      state = { ...state, download: { state: "verified", bytes, total: asset.size, path: destination, version: latest.version, sha256: asset.sha256 } };
     } catch (error) {
       state = { ...state, download: { state: "error", error: error.message || "Download interrupted" } };
     } finally {
@@ -97,6 +105,6 @@ export function createUpdater({ version, directory, kind, fetcher = fetch }) {
     }
     return state;
   }
-  return { status: () => state, check, download };
+  return { status: () => state, check, download, downloading };
 }
 

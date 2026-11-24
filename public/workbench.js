@@ -233,11 +233,24 @@ export async function showSetup(onSaved, onGooseChanged) {
 }
 
 function updateDetails(data) {
-  const download = data.download;
-  if (download?.state === "running") return 'Downloading <progress max="'+download.total+'" value="'+download.bytes+'"></progress>';
-  if (download?.state === "error") return esc(download.error);
-  if (download?.state === "verified") return 'Checksum verified. Close WiskHarness before manually opening the installer or replacing the portable executable.<code class="codepath">'+esc(download.path)+'</code>';
-  return esc(data.error || (data.available && !data.latest?.asset ? "A verified download is unavailable for this release." : ""));
+  const download=data.download;
+  if(data.installing)return "Installing and restarting…";
+  if(data.checking)return "Checking for updates…";
+  if(download?.state==="running"){
+    const percent=Math.floor(100*download.bytes/download.total);
+    const mb=value=>(value/1048576).toFixed(1);
+    const remaining=mb(download.total-download.bytes)+" MB remaining";
+    const speed=download.bytesPerSecond?" · "+mb(download.bytesPerSecond)+" MB/s":"";
+    return "Downloading "+percent+"% · "+remaining+speed+
+      '<br><progress aria-label="Update download" max="'+download.total+'" value="'+download.bytes+'"></progress>';
+  }
+  if(download?.state==="verifying")return "Verifying download…";
+  if(download?.state==="error")return "Update failed. "+esc(download.error);
+  if(data.installError)return (download?.state==="verified"?"Ready to install. ":"Update failed. ")+esc(data.installError);
+  if(data.error)return "Update check failed. "+esc(data.error);
+  if(download?.state==="verified")return "Ready to install.";
+  if(data.available)return data.latest.asset?"Update available.":"A verified download is unavailable for this release.";
+  return data.checkedAt?"Up to date.":"Check GitHub for updates.";
 }
 
 const toolLabels={read:"File reads",write:"File writes",delete:"File deletion",execute:"Command execution",other:"Other or unidentified tools"};
@@ -520,25 +533,38 @@ export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChan
   const target=panel.querySelector("#update-settings");
   async function draw(data) {
     if (!target.isConnected) return;
+    const working=data.installing||["running","verifying"].includes(data.download?.state);
+    const ready=data.available&&data.download?.state==="verified"&&data.download.version===data.latest?.version;
+    const canUpdate=data.desktopUpdates&&data.available&&data.latest?.asset&&!working;
     target.innerHTML=row("Installed version",data.version)+row("Latest eligible release",data.latest?.version||"Unavailable")+
       row("Last successful check",time(data.lastSuccessfulCheck))+
       '<div class="setting-row"><label for="update-auto">Check automatically</label><input class="switch" type="checkbox" id="update-auto" '+(data.automatic?"checked":"")+'></div>'+
       '<div class="setting-row"><label for="update-channel">Release channel</label><select class="field" id="update-channel"><option value="stable">Stable</option><option value="beta" '+(data.channel==="beta"?"selected":"")+'>Beta</option></select></div>'+
-      '<div class="workbench-actions">'+button("update-check","Check now")+(data.available?safeLink(data.latest.notes,"View changelog"):"")+
-      (data.available&&data.latest.asset&&data.download?.state!=="running"?button("update-download","Download update",true):"")+'</div><p role="status" data-status>'+updateDetails(data)+'</p>';
+      '<div class="workbench-actions">'+(working?"":button("update-check",data.error?"Retry check":"Check now"))+(data.available?safeLink(data.latest.notes,"View changelog"):"")+
+      (canUpdate?(ready?button("update-install","Install and restart",true):button("update-download",data.download?.state==="error"||data.installError?"Retry update":"Update",true)):"")+
+      '</div><p role="status" data-status>'+updateDetails(data)+'</p>'+
+      (data.available&&data.latest.summary?'<details><summary>Release notes</summary><p style="white-space:pre-wrap">'+esc(data.latest.summary)+'</p></details>':"");
+    for(const id of ["#update-auto","#update-channel"])target.querySelector(id).disabled=working;
     const settings = () => request("/api/updates/preferences",{automatic:target.querySelector("#update-auto").checked,channel:target.querySelector("#update-channel").value})
       .then(draw).catch(error=>message(target,error.message));
     target.querySelector("#update-auto").onchange=settings;
     target.querySelector("#update-channel").onchange=settings;
-    target.querySelector("#update-check").onclick=async event=>{
+    const check=target.querySelector("#update-check");
+    if(check)check.onclick=async event=>{
       event.currentTarget.disabled=true;
       message(target,"Checking GitHub…");
       try {await draw(await request("/api/updates/check",{}))}
       catch(error) {message(target,error.message)}
     };
-    const download=target.querySelector("#update-download");
-    if(download)download.onclick=()=>request("/api/updates/download",{}).then(draw).catch(error=>message(target,error.message));
-    if(data.download?.state==="running"){
+    for(const action of ["download","install"]){
+      const control=target.querySelector("#update-"+action);
+      if(control)control.onclick=async()=>{
+        control.disabled=true;
+        try{await draw(await request("/api/updates/"+action,{}))}
+        catch(error){message(target,error.message);control.disabled=false}
+      };
+    }
+    if(working||data.checking){
       setTimeout(async()=>{if(target.isConnected)try{await draw(await request("/api/updates"))}catch(error){message(target,error.message)}},650);
     }
   }
@@ -554,7 +580,7 @@ export async function notifyUpdate(onSettings) {
     if (data.available && sessionStorage.getItem("wisk-remind")!==data.latest.version) {
       if (document.querySelector("dialog[open]")) return;
       const dialog=modal("WiskHarness update available",row("Installed",data.version)+row("Available",data.latest.version)+
-        '<div class="workbench-actions">'+safeLink(data.latest.notes,"View changelog")+button("wisk-update-open","Open download settings",true)+button("wisk-remind","Remind me later")+'</div>');
+        '<div class="workbench-actions">'+safeLink(data.latest.notes,"View changelog")+button("wisk-update-open","View update",true)+button("wisk-remind","Remind me later")+'</div>');
       dialog.querySelector("#wisk-update-open").onclick=()=>{dialog.close();onSettings()};
       dialog.querySelector("#wisk-remind").onclick=()=>{sessionStorage.setItem("wisk-remind",data.latest.version);dialog.close()};
       return;

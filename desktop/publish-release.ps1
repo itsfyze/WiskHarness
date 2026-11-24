@@ -26,17 +26,34 @@ git merge-base --is-ancestor $commit refs/remotes/origin/main
 if ($LASTEXITCODE -ne 0) { throw 'The tag commit must be present on origin/main.' }
 
 $directory = (Resolve-Path -LiteralPath $AssetDirectory).Path
-$names = @("WiskHarness Portable $version.exe", "WiskHarness Setup $version.exe", 'SHA256SUMS.txt')
+$names = @("WiskHarness Portable $version.exe", "WiskHarness Setup $version.exe", 'SHA256SUMS.txt', 'update-manifest.json')
 $files = @{}
 $hashes = @{}
 $manifestLines = @()
+$updateFiles = @()
 foreach ($name in $names[0..1]) {
     $file = Get-Item -LiteralPath (Join-Path $directory $name)
     if ($file.VersionInfo.ProductVersion -ne $version) { throw "Unexpected executable version in $name." }
     $files[$name] = $file
     $hashes[$name] = (Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant()
     $manifestLines += "$($hashes[$name])  $name"
+    $updateFiles += [ordered]@{
+        kind = if ($name.Contains(' Portable ')) { 'portable' } else { 'setup' }
+        name = $name.Replace(' ', '.')
+        size = $file.Length
+        digest = "sha256:$($hashes[$name])"
+    }
 }
+$updateManifest = Join-Path $directory $names[3]
+$metadata = [ordered]@{
+    version = $version
+    repository = $repository
+    channel = if ($version.Contains('-')) { 'beta' } else { 'stable' }
+    files = $updateFiles
+} | ConvertTo-Json -Depth 4
+$metadata | Set-Content -LiteralPath $updateManifest -Encoding utf8
+$files[$names[3]] = Get-Item -LiteralPath $updateManifest
+$hashes[$names[3]] = (Get-FileHash -LiteralPath $updateManifest).Hash.ToLowerInvariant()
 $manifest = Join-Path $directory $names[2]
 if (!(Test-Path -LiteralPath $manifest)) { $manifestLines | Set-Content -LiteralPath $manifest -Encoding ascii }
 $actualLines = @(Get-Content -LiteralPath $manifest)
@@ -81,7 +98,7 @@ foreach ($name in $names) {
     if ($LASTEXITCODE -ne 0) { throw "Could not upload $name. The release remains a draft." }
 }
 $release = Read-Release
-if (!$release -or $release.assets.Count -ne $names.Count) { throw 'Expected exactly three uploaded assets.' }
+if (!$release -or $release.assets.Count -ne $names.Count) { throw 'Unexpected number of uploaded assets.' }
 foreach ($name in $names) {
     $asset = @($release.assets | Where-Object { $_.name -in @($name,(Published-Name $name)) })
     if ($asset.Count -ne 1) { throw "Asset readback failed for $name." }

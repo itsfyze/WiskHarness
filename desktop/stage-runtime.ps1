@@ -36,3 +36,8 @@ Push-Location $stage
 try { & npm.cmd ci --omit=dev --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { throw "npm ci failed" } }
 finally { Pop-Location }
 Write-Host "Runtime staged at $stage"
+
+$csc = Join-Path $env:WINDIR "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+$runner = Join-Path $stage "WiskHarness Update.exe"
+& $csc /nologo /target:winexe /platform:x64 /optimize+ "/out:$runner" /reference:System.Windows.Forms.dll (Join-Path $PSScriptRoot "update-runner.cs")
+if ($LASTEXITCODE -ne 0) { throw "Update runner compilation failed" }

@@ -39,7 +39,7 @@ Settings can preview and save a diagnostic report, export a private text-chat an
 
 A configured Obsidian vault receives background checkpoints for substantial Agent edits and keeps their history. To supply project facts to the Agent, add an “Agent context” level-two heading to the matching project note. Set the first line under it to `Workspace: ` followed by the absolute workspace path, then add the facts below it. A failed write can be inspected or retried from the chat. Configure or disable the integration in Settings.
 
-Settings can check the official GitHub repository for stable or beta releases. WiskHarness checks the release asset’s HTTPS origin, size and GitHub SHA-256 digest before saving it. Installation and portable replacement are manual. Tailscale detection reports local status. The app’s API remains loopback-only.
+Settings can check the official GitHub repository for stable or beta releases. WiskHarness checks the release asset’s HTTPS origin, size and GitHub SHA-256 digest before saving it. From beta.6 onward, choose **Update** to download in the background, verify the package, and restart into the new version. Finish or cancel active work if asked. Upgrading from beta.5 or earlier requires running Setup or replacing Portable once. Keep the Portable executable in a writable location. Tailscale detection reports local status. The app’s API remains loopback-only.
 
 ## Build from source
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3-beta.6
+
+- Download and verify updates in the background, then install and restart WiskHarness.
+- Install Setup releases in place and replace the Portable executable with a recoverable backup.
+- Show release notes, download speed, progress, verification, and recovery controls.
+- If work is active when a download finishes, finish or cancel it before installing.
+- To move from beta.5 or older to beta.6, run the verified Setup installer or replace the Portable executable once. Automatic installation starts with beta.6.
+
 ## 0.7.3-beta.5
 
 - Continue after premature progress summaries and require tool evidence for implementation, compilation, tests, and packaging when requested.

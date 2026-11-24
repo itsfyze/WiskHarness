@@ -28,13 +28,19 @@ The Windows CI workflow tests and builds packages for pull requests and pushes t
 
 For every GitHub release, review the source diff and run ./desktop/check-release-source.ps1. Stage public source only. Keep credentials, private settings, runtime profiles and personal Obsidian notes out of the commit and release assets. Commit the package and lockfile version changes, push main, then push the matching v<version> tag.
 
-Run **Publish Windows release** from main in GitHub Actions with that tag. The workflow checks the tagged source, tests and builds Setup and Portable, then adds those two EXEs and SHA256SUMS.txt to a draft. It publishes once GitHub reports matching asset sizes and hashes. It then downloads all three public assets without authentication, verifies their SHA-256 hashes and checks the repository version at the tag. Treat a failed verification as an incomplete release.
+Run **Publish Windows release** from main in GitHub Actions with that tag. The workflow checks the tagged source, tests and builds Setup and Portable, then generates SHA256SUMS.txt and update-manifest.json from the two EXEs and uploads all four assets to a draft. It publishes once GitHub reports matching asset sizes and hashes. It then downloads all four public assets without authentication, verifies their SHA-256 hashes and checks the repository version at the tag. Treat a failed verification as an incomplete release.
 
 To publish already verified local builds, run ./desktop/publish-release.ps1 with the pushed tag and the package directory from the clean tagged checkout. Use PowerShell 7 and an authenticated GitHub CLI. This runs the same source, artifact and public download checks. A prerelease tag publishes as a GitHub prerelease.
 
 The standalone launcher opens the native Windows uninstaller for the matching registered WiskHarness version. `--check` checks for a match without launching the uninstaller. For isolated release testing, `--silent` invokes the matching uninstaller in silent mode.
 
-## Verify the beta update
+## Automatic updates
+
+The backend gets release metadata directly from the official GitHub Releases API. GitHub's SHA-256 digests are the runtime source of truth. The release workflow also publishes update-manifest.json and verifies every uploaded asset against GitHub's readback. Full downloads use GitHub release metadata without channel YAML or differential blockmaps. Windows packages are unsigned. The official repository and its GitHub asset digest establish update integrity over HTTPS.
+
+Electron hands off to a bundled Windows runner after the backend confirms no agent, terminal, Git mutation or model unload is active. The runner waits for Electron to exit, rechecks the hash, applies the package and confirms the new Electron window and local backend start at the target version. Setup updates use the existing install directory. Portable replacement uses an adjacent backup and requires a writable filesystem that supports Windows file replacement. If the new Portable process exits before confirming startup, the runner attempts to restore the backup. If automatic restoration is unavailable, the runner reports the backup path. App settings and conversation files stay in the same profile.
+
+## Verify the beta build
 
 Run npm tests for the ordinary regression suite. The following manual checks require their external runtimes and create disposable profiles.
 
