@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Validate Mistral Vibe 3.1.5 on Windows with installed Ollama models and prove permission enforcement before making Vibe the default.
+Stable 0.7.3 is published. The tagged source and all four public artifacts were verified. The published beta.7 Portable upgraded through the live GitHub feed.
 
 ## Completed milestones
 
@@ -18,13 +18,13 @@ Vibe can run built-in operations without an ACP approval callback. An isolated c
 
 References: [Vibe Windows release](https://github.com/mistralai/mistral-vibe/releases/tag/v3.1.5), [offline model configuration](https://docs.mistral.ai/vibe/code/cli/offline-models), [ACP protocol](https://agentclientprotocol.com/), [Ollama](https://docs.ollama.com/).
 
-## Outstanding objectives
+## Objectives at the audit checkpoint
 
 - Vibe runtime startup, approved tools, model discovery/configuration and measured inference status.
 - Agent, Plan and Ask, session restoration, desktop redesign, live changes and diff review, web search and MCP management.
 - Isolated live model and desktop verification, Windows packages, beta.7 migration, release and public checksum verification.
 
-## Known limitations
+## Limitations observed at the audit checkpoint
 
 The baseline currently captures workspace changes at turn completion. Vibe startup with an Ollama provider and execution through WiskHarness have yet to be verified.
 
@@ -53,4 +53,4 @@ The baseline currently captures workspace changes at turn completion. Vibe start
 - Stable Setup applied and reopened from a beta.7 fixture under a disposable installer GUID. The test rejected an interrupted download, observed progress and verified the saved settings and conversation byte for byte.
 - Compressed Portable candidates missed beta.7's restart verification window. The official runtime now ships as a verified archive, and the Portable wrapper extracts stored files directly. The tested Portable release artifact is about 501 MiB. Its controlled beta.7 upgrade rejected a bad download, replaced and verified the exact new executable, reopened in about seven seconds, and preserved the saved settings and conversation.
 - Normal tests passed. One bundled-runtime test is skipped until the verified Windows runtime is supplied, then passes in the dedicated stage. The live Devstral recovery run produced working code and a valid package. After automatic compaction, the test client timed out before its final response, so the independent checks establish the project outcome.
-- The approved next gate is public release file readback and upgrade of the unmodified beta.7 Portable executable through GitHub.
+- The stable release was published at v0.7.3, commit 844ae5bfeaa46e50bb4805d6e88fe53c219c5e78. Anonymous full downloads verified Setup, Portable, SHA256SUMS.txt and update-manifest.json. The original public beta.7 Portable matched its published digest, found the stable release on the real GitHub feed, shut down, applied the exact stable executable and reopened at 0.7.3. Saved settings and conversation bytes were unchanged.
