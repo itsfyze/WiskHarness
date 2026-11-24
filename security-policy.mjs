@@ -180,7 +180,7 @@ export function ordinaryDevelopmentCommand(input, workspace, protectedPath=()=>f
   if(["python","py"].includes(executable)&&args[0]==="-m"&&!["py_compile","compileall","unittest","pytest","zipfile","tkinter"].includes(args[1]))return false;
   return args.every(value=>{
     if(/[:=@]/.test(value)||path.isAbsolute(value)||value.split(/[\\/]/).includes("..")||sensitivePath(value))return false;
-    if(!/[\\/\.]/.test(value)||value.startsWith("-"))return true;
+    if(value.startsWith("-"))return !/[\\/]/.test(value);
     try {
       const target=resolveExistingParent(path.resolve(workspace,value));
       const relative=path.relative(fs.realpathSync(workspace),target);

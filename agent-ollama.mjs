@@ -128,7 +128,7 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
   }));
   const outstanding=()=>checklist.filter(item=>!item.evidence);
   let lastProgress=checkpoint?.lastProgress||null, correction="", recovery=0, compacted=0;
-  let lastFailure="";
+  let lastFailure="", lastFailureSignature=null;
   const started=performance.now();
   const pendingReadbacks=new Set();
   const recoveryLimit=budget.recovery||defaultBudget.recovery;
@@ -217,7 +217,7 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
         const valid = !invalid && step.calls.length===1 && ["completed","incomplete","answered"].includes(status) && summary &&
           summary.length<=12000 && Object.keys(input).length===2;
         if (!valid) result={ok:false,error:"Call finish_task by itself with a valid status and summary."};
-        else if (status==="completed" && (successCount===0 || lastActionFailed || needsVerification || outstanding().length)) result={ok:false,error:"Completion needs successful tool evidence. Read back changed files or run checks after the last mutation. Report outstanding failures as incomplete."};
+        else if (status==="completed" && (successCount===0 || lastActionFailed || needsVerification || outstanding().length)) result={ok:false,error:"Completion needs successful tool evidence. Read back the changed files or run checks for the outstanding objectives. Continue while a check can run."};
         else if (status==="answered" && (callCount>0 || needsExecution || checklist.length)) result={ok:false,error:"This task requires execution. Use tools and verify the work, or report incomplete."};
         else if(status==="incomplete"){
           if(blockedReason){onText(summary+"\n\nPermission boundary: "+blockedReason);return "permission_blocked";}
@@ -255,7 +255,12 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
             source:["write_file","edit_file"].includes(name)&&/\.(?:py|js|ts|jsx|tsx|java|cs|rs|go|c|cpp|html|css|ps1)$/i.test(String(input?.path)),
           };
           if(matches.source){
-            for(const item of checklist)if(item.id!=="source")item.evidence=null;
+            const isTest=/(?:^|[\\/])tests?(?:[\\/]|$)|(?:^|[\\/])test_[^\\/]+$/i.test(input.path);
+            for(const item of checklist)if(item.id==="test"||!isTest&&item.id!=="source")item.evidence=null;
+          }
+          if(lastFailureSignature===signature||matches.build||matches.test||matches.package){
+            lastFailure="";
+            lastFailureSignature=null;
           }
           for(const item of checklist)if(matches[item.id])item.evidence=lastProgress;
           if (mutation || name==="run_command" || checklist.some(item=>item.evidence===lastProgress))recovery=0;
@@ -264,11 +269,14 @@ export async function runOllamaAgent({endpoint, model, capabilities, contextToke
             if(name!=="create_directory")pendingReadbacks.add(input.path);
           }
           if(name==="read_file")pendingReadbacks.delete(input.path);
+          const shellRead=name==="run_command"&&command.match(/^(?:Get-Content\s+(?:-LiteralPath\s+)?|type\s+)["']?([^"'\s]+)["']?$/i);
+          if(shellRead)pendingReadbacks.delete(shellRead[1]);
           if(name==="run_command"&&(matches.build||matches.test||matches.package))pendingReadbacks.clear();
-          if((name==="read_file"||name==="run_command"&&(matches.build||matches.test||matches.package))&&!pendingReadbacks.size)needsVerification=false;
+          if((name==="read_file"||shellRead||name==="run_command"&&(matches.build||matches.test||matches.package))&&!pendingReadbacks.size)needsVerification=false;
         } else {
           const headline=String(result.error||result.stderr||result.stdout||"Tool failed").slice(0,1600);
           lastFailure=name+" "+command.slice(0,220)+": "+headline;
+          lastFailureSignature=signature;
           const failed=commandObjectives(command);
           if(!duplicate)for(const item of checklist)if(failed[item.id])item.evidence=null;
           recover(headline);
