@@ -21,7 +21,7 @@ export function redactSecrets(value) {
 }
 
 function toolLabel(title) {
-  return typeof title==="string"?title.split(/\s+·\s+/,1)[0].trim().toLowerCase().replace(/^developer__/,""):"";
+  return typeof title==="string"?title.split(/\s+·\s+/,1)[0].trim().toLowerCase().replace(/^developer__/,"").replace(/^(run_command|read_file|write_file|edit_file)$/,(name)=>({run_command:"shell",read_file:"analyze",write_file:"write",edit_file:"edit"})[name]):"";
 }
 function resolveExistingParent(candidate) {
   try {
@@ -133,12 +133,12 @@ export function permissionScope(call, decision, workspace) {
     (read ? decision.category === "read" && fs.existsSync(decision.resolved[0]) &&
       fs.statSync(decision.resolved[0], {throwIfNoEntry:false})?.isFile() : decision.category === "write");
   const shell = decision.category === "execute" && title==="shell" &&
-    keys.join(",") === "command" && operation.trim() !== "";
+    ["command","command,shell"].includes(keys.join(",")) && operation.trim() !== "";
   if (!structured && !shell) return null;
   const root = fs.realpathSync(workspace);
   const identity = structured
     ? ["file", action, decision.resolved[0], keys.filter(key=>key!=="path").map(key=>[key,input[key]])]
-    : ["shell", operation];
+    : ["shell", operation, ...(input.shell ? [input.shell] : [])];
   return {
     workspace: root,
     fingerprint: createHash("sha256").update(JSON.stringify([root,...identity])).digest("hex"),

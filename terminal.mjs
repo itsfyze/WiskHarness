@@ -10,13 +10,13 @@ export function stopTree(child) {
   });
 }
 
-export function startTerminal({ shell, command, workspace, redact, update }) {
+export function startTerminal({ shell, command, workspace, redact, update, env, timeoutMs = 5 * 60 * 1000 }) {
   const ps = shell === "powershell";
   const args = ps
     ? ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")]
     : ["/d", "/s", "/c", '"' + command + '"'];
   const child = spawn(ps ? "powershell.exe" : "cmd.exe", args, {
-    cwd: workspace, windowsHide: true, windowsVerbatimArguments: !ps, stdio: ["ignore", "pipe", "pipe"]
+    cwd: workspace, env, windowsHide: true, windowsVerbatimArguments: !ps, stdio: ["ignore", "pipe", "pipe"]
   });
   const run = { id: randomUUID(), shell, command: redact ? redact(command) : command, workspace, state: "running", startedAt: new Date().toISOString(),
     code: null, chunks: [], truncated: false };
@@ -78,7 +78,7 @@ export function startTerminal({ shell, command, workspace, redact, update }) {
     update(run);
     return false;
   }
-  timer = setTimeout(() => void stop("timed out"), 5 * 60 * 1000);
+  timer = setTimeout(() => void stop("timed out"), timeoutMs);
   timer.unref();
   return { run, stop };
 }

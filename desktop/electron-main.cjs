@@ -50,7 +50,7 @@ async function ensureBackend() {
   const projectFolder = path.join(app.getPath('documents'), 'Local Agent Harness');
   const hasSourceProject = existsSync(path.join(projectFolder, 'settings.json'));
   const settingsFolder = process.env.LOCAL_AGENT_SETTINGS_DIR || (hasSourceProject ? projectFolder : app.getPath('userData'));
-  const agentWorkspace = process.env.LOCAL_AGENT_WORKSPACE || (hasSourceProject ? projectFolder : app.getPath('documents'));
+  const agentWorkspace = process.env.LOCAL_AGENT_WORKSPACE || path.join(app.getPath('documents'), 'WiskHarness Projects');
   let chosenPort = Number(process.env.LOCAL_AGENT_PORT || 4317);
   if (process.env.LOCAL_AGENT_PORT && !(await portFree(chosenPort)))
     throw new Error('The requested WiskHarness port is already in use');

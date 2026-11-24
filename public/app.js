@@ -85,7 +85,7 @@ function renderTop(){
   $(".main").classList.toggle("show-home",home);
   $("#view-title").textContent=home?"New chat":state.view[0].toUpperCase()+state.view.slice(1);
   $("#view-context").textContent=state.view==="chats"
-    ? home?shortPath(state.session?.workspace||state.health?.preflight?.workspace||"Workspace"):state.session.title
+    ? home?shortPath(state.session?.workspace||state.draftWorkspace||state.health?.preflight?.workspace||"Workspace"):shortPath(state.session.workspace)
     : shortPath(state.health?.preflight?.workspace||"Local workspace");
   const mode=currentMode();
   $("#mode-trigger").innerHTML=modeIcon(mode)+'<strong>'+modeNames[mode]+'</strong>'+chevron;
@@ -93,10 +93,11 @@ function renderTop(){
   $("#model-label").textContent=model.label||"Choose model";
   $("#model-trigger").title=$("#model-label").textContent;
   $("#model-trigger").setAttribute("aria-label",model.label?"Choose model, current model "+model.label:"Choose model");
-  const ok=!!(state.health?.ollama&&(mode==="plan"||state.health?.goose));
+  const legacy=state.health?.agentEngine==="goose";
+  const ok=!!(state.health?.ollama&&(mode==="plan"||!legacy||state.health?.goose));
   $("#connection-dot").classList.toggle("online",ok);$("#connection-text").textContent=ok?"Local runtime online":"Runtime unavailable";
   $("#top-connection").textContent=state.busy?"Running":model.cloud?"Cloud · "+model.provider:model.provider!=="Ollama"?"Local · "+model.provider:state.health?.ollama?"Ollama connected":"Ollama offline";
-  $("#runtime-label").textContent=mode==="plan"?model.provider:"Goose ACP · Ollama";
+  $("#runtime-label").textContent=mode==="plan"?model.provider:legacy?"Goose ACP · Ollama":"Ollama Agent";
   $("#top-connection").classList.toggle("online",ok);
   $("#model-trigger").disabled=!hasModelSource()||state.busy;
 }
@@ -155,7 +156,7 @@ async function openSession(id,change=true){
 }
 async function newSession(workspace,mode=currentMode(),model=state.draftModel){
   try{
-    const data=await post("/api/sessions",{workspace,mode,model});
+    const data=await post("/api/sessions",{workspace:workspace||state.draftWorkspace,mode,model});
     await loadSessions();
     return await openSession(data.session.id);
   }catch(e){toast(e.message,"error")}
@@ -309,12 +310,15 @@ function chatComposer(mode,running,home){
 
 function chatHome(mode,session,composer){
   const agent=mode==="agent";
-  const missing=agent&&state.health&&!state.health.goose;
-  const setup=agent&&!state.health?.gooseRuntime?.portableAvailable;
+  const legacy=state.health?.agentEngine==="goose";
+  const missing=agent&&legacy&&!state.health.goose;
+  const setup=agent&&legacy&&!state.health.gooseRuntime?.portableAvailable;
+  const folder=session?.workspace||state.draftWorkspace||state.health?.preflight?.workspace;
+  const workspace=agent?'<button class="btn btn-small" type="button" id="home-workspace" aria-haspopup="menu" aria-label="'+esc("Workspace: "+(folder||"Choose workspace"))+'" title="'+esc(folder)+'" '+(session?"disabled":"")+'>'+esc(folder?shortPath(folder):"Choose workspace")+'</button>':"";
   return '<section class="home-stage" aria-labelledby="home-title"><div class="home-intro">'+
     '<img src="/wiskharness.png" width="36" height="36" alt=""><h1 id="home-title">'+
     (agent?"What should WiskHarness work on?":"What would you like to plan?")+'</h1></div>'+composer+
-    '<div class="home-shortcuts" role="group" aria-label="Prompt suggestions">'+homePrompts[mode].map(([label],index)=>
+    '<div class="home-shortcuts" role="group" aria-label="Workspace and prompt suggestions">'+workspace+homePrompts[mode].map(([label],index)=>
       '<button class="btn btn-plain" type="button" data-home-prompt="'+index+'">'+label+'</button>').join("")+
     (setup?'<button class="btn btn-plain" type="button" id="configure-goose">'+(missing?"Set up Goose":"Set up portable Goose")+'</button>':"")+
     '</div>'+
@@ -334,7 +338,7 @@ function renderChats(){
     (home?chatHome(mode,s,composer):transcript+composer)+'</div>'+(!home&&!plan?inspector:"")+'</div>';
   if(!home){
     const body=$("#chat-body");
-    const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",error:"Error"};
+    const statuses={running:"Running",completed:"Saved",ready:"Saved",interrupted:"Interrupted",cancelled:"Stopped",incomplete:"Incomplete",error:"Error"};
     body.innerHTML='<div class="chat-heading"><strong>'+esc(s.title)+'</strong><span class="badge '+(running?"warn":"")+'">'+(statuses[s.status]||"Saved")+'</span></div><div id="messages"></div>';
     for(const m of s.messages)appendMessage(m);
     if(plan&&!running){
@@ -381,6 +385,21 @@ function renderChats(){
   if(input.value)input.dispatchEvent(new Event("input"));
   if(home){
     $("#home-mode-trigger").onclick=event=>showModePicker(event.currentTarget);
+    const folder=$("#home-workspace");
+    if(folder&&!folder.disabled)folder.onclick=()=>{
+      const list=document.createElement("div");
+      list.className="popover-list";list.setAttribute("role","menu");list.setAttribute("aria-label","Workspace");
+      for(const project of state.projects.filter(project=>project.exists)){
+        const option=document.createElement("button");
+        option.className="popover-item";option.setAttribute("role","menuitem");option.textContent=project.name;option.title=project.path;
+        option.onclick=()=>{rememberDraft();state.draftWorkspace=project.path;closePopover();renderChats();$("#chat-input")?.focus()};
+        list.append(option);
+      }
+      const manage=document.createElement("button");
+      manage.className="popover-item";manage.setAttribute("role","menuitem");manage.textContent="Manage project folders";
+      manage.onclick=()=>{rememberDraft();changeView("projects")};list.append(manage);
+      openPopover(list,folder);
+    };
     const configure=$("#configure-goose");
     if(configure)configure.onclick=()=>{
       changeView("settings");
@@ -408,7 +427,7 @@ function updatePerformance(){
   mountPerformance(root,{
     model,identity,sessionId:state.session?.id,
     metrics:state.performance,running:runInView()&&state.busy,compact:!!root.closest(".chat-home"),
-    connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()==="plan"||state.health?.goose):
+    connected:identity.provider==="Ollama"?state.health?.ollama&&(currentMode()==="plan"||state.health?.agentEngine!=="goose"||state.health?.goose):
       state.providerData?.providers.find(item=>item.name===identity.provider||item.id===identity.provider)?.connected,
     onOpen:()=>api("/api/models/diagnostics")
   });
@@ -452,7 +471,7 @@ function appendMessage(m){
     const activity=document.createElement("details");activity.className="message-tools";activity.hidden=currentMode()==="plan"||!(m.tools?.length);
     activity.innerHTML='<summary>Tool activity (<span class="tool-count">'+(m.tools?.length||0)+'</span>)</summary><div class="tool-list"></div>';
     for(const t of m.tools||[])activity.querySelector(".tool-list").append(toolRow(t));
-    const status=document.createElement("div");status.className="message-status";status.textContent=m.status==="streaming"?"Working…":m.status==="error"?(m.error||"Error"):m.status==="interrupted"?"Interrupted":m.status==="cancelled"?"Stopped":"";
+    const status=document.createElement("div");status.className="message-status";status.textContent=m.status==="streaming"?"Working…":m.status==="error"?(m.error||"Error"):m.status==="interrupted"?"Interrupted":m.status==="cancelled"?"Stopped":m.status==="incomplete"?"Incomplete":"";
     if(m.status==="error")status.classList.add("error");
     content.append(byline,answer,activity,status);row.append(icon,content);block.append(row);
   }
@@ -462,7 +481,7 @@ function scrollChat(){const root=$("#chat-scroll");if(root)root.scrollTop=root.s
 function updateInspector(){
   const panel=$("#chat-inspector");if(!panel)return;
   const p=state.health?.preflight||{},s=state.session;
-  panel.innerHTML='<div class="inspector-group"><div class="inspector-label">AGENT</div><div class="inspector-info"><strong>Goose ACP + Ollama</strong><p>'+esc(s?.model||state.modelData?.selected||"No model")+'</p><p class="'+(state.health?.goose&&state.health?.ollama?"green":"")+'">'+(state.health?.goose&&state.health?.ollama?"Connected":"Setup needed")+'</p></div></div>'+
+  panel.innerHTML='<div class="inspector-group"><div class="inspector-label">AGENT</div><div class="inspector-info"><strong>'+(state.health?.agentEngine==="goose"?"Goose ACP + Ollama":"Ollama Agent")+'</strong><p>'+esc(s?.model||state.modelData?.selected||"No model")+'</p>'+(s?.task?.engineNotice?'<p>'+esc(s.task.engineNotice)+'</p>':"")+'<p class="'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"green":"")+'">'+((state.health?.agentEngine!=="goose"||state.health?.goose)&&state.health?.ollama?"Connected":"Setup needed")+'</p></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">SAVED SESSION</div><div class="inspector-list"><div class="inspector-item"><span>Storage</span><span>Local files</span></div><div class="inspector-item"><span>Messages</span><span>'+(s?.messages?.length||0)+'</span></div><div class="inspector-item"><span>Status</span><span>'+esc(s?.status||"Not started")+'</span></div></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">WORKING DIRECTORY</div><div class="inspector-info"><strong>'+esc(shortPath(s?.workspace||p.workspace||"Workspace"))+'</strong><p class="codepath">'+esc(s?.workspace||p.workspace||"Not configured")+'</p></div></div>'+
     '<div class="inspector-group"><div class="inspector-label">TOOLS</div><div class="inspector-list"><div class="inspector-item"><span>File operations</span><span>'+(p.workspace===s?.workspace&&p.filesystem?"Verified":"Not checked")+'</span></div><div class="inspector-item"><span>PowerShell</span><span>'+(p.workspace===s?.workspace&&p.terminal?"Verified":"Not checked")+'</span></div></div></div>'+
@@ -539,6 +558,7 @@ async function runPrompt(){
         if(previous){next.open=previous.open;previous.replaceWith(next)}else list.append(next);
       }
     }else if(event.type==="task"){record.task=event.task;}
+    else if(event.type==="status"&&event.update.includes("compatibility mode")){toast(event.update);}
     else if(event.type==="permission")showPermission(event);
     else if(event.type==="permission-resolved")dismissPermission(event.requestId);
     else if(event.type==="metrics"){state.performance=event.metrics;updatePerformance()}
@@ -550,7 +570,7 @@ async function runPrompt(){
     else if(event.type==="done"){reply.status=event.session.status;completed=true}
     else if(event.type==="start"){if(runInView())$("#save-status")?.replaceChildren(document.createTextNode("Running"));record.status="running"}
     const marker=document.querySelector('[data-message="'+reply.id+'"] .message-status');
-    if(marker)marker.textContent=reply.status==="error"?reply.error:completed?"Saved":"Working…";
+    if(marker)marker.textContent=reply.status==="error"?reply.error:completed?(reply.status==="incomplete"?"Incomplete":"Saved"):"Working…";
   }
   try{
     const response=await fetch("/api/sessions/"+sid(recordId)+"/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt,cloudConsent:model.cloud?record.model:undefined})});
@@ -604,7 +624,7 @@ function showPermission(event){
   const dialog=document.createElement("dialog");dialog.className="modal permission-modal";
   const title=document.createElement("h2");title.textContent="Tool approval required";
   dialog.setAttribute("aria-label",title.textContent);
-  const description=document.createElement("p");description.textContent=event.title||"Goose requested permission to run a tool.";
+  const description=document.createElement("p");description.textContent=event.title||"The agent requested permission to run a tool.";
   dialog.append(title,description);
   if(event.workspace){
     const scope=document.createElement("p");scope.textContent="Workspace · "+event.workspace+(event.outside?.length?". Explicit paths outside workspace · "+event.outside.join(", "):". Review any paths outside this folder.")+" Tools use your Windows permissions.";
@@ -687,18 +707,28 @@ function renderAgents(){
 }
 function renderProjects(){
   $("#content").innerHTML='<div class="content-scroll"><div class="page-width">'+heading("LOCAL FOLDERS","Projects","Manage the folders available to new chats.",'<button class="btn" id="projects-refresh">Refresh</button>')+
-    '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Add a project</h2><p>Enter an existing Windows directory</p></div></div><div class="card-content"><div class="field-row"><input id="project-path" class="field" aria-label="Project folder" placeholder="C:\\Users\\…\\Documents\\My Project"><button class="btn btn-primary" id="project-add">Add</button></div><p class="inline-help">New chats use the active folder. Already saved chats retain their own original workspace.</p></div></section>'+
+    '<section class="card" style="margin-bottom:20px"><div class="card-header"><div><h2>Add a project</h2><p>Enter an absolute Windows folder path</p></div></div><div class="card-content"><div class="field-row"><input id="project-path" class="field" aria-label="Project folder" placeholder="C:\\Users\\…\\Documents\\My Project"><button class="btn btn-primary" id="project-add">Add existing</button><button class="btn" id="project-create">Create folder</button></div><p class="inline-help">New chats use the active folder. Already saved chats retain their own original workspace.</p></div></section>'+
     '<section class="card"><div class="card-header"><div><h2>Registered folders</h2><p>Workspace and saved chat count</p></div></div><div id="project-list">'+(state.projects.length?state.projects.map(p=>
       '<div class="project-row"><span class="project-icon">▣</span><span class="project-desc"><strong>'+esc(p.name)+'</strong><small>'+esc(p.path)+'</small></span><span class="badge '+(p.active?"ok":p.exists?"":"warn")+'">'+(p.active?"Active":p.exists?"Saved":"Missing")+'</span><span class="badge">'+p.sessions+' chats</span>'+(p.active?"":'<button class="btn btn-small" data-activate="'+esc(p.path)+'">Use folder</button><button class="btn btn-small btn-danger" data-remove="'+esc(p.path)+'" title="Remove folder from list">Remove</button>')+'</div>').join(""):'<div class="empty-panel">No folders added yet.</div>')+'</div></section></div></div>';
-  $("#project-add").onclick=async()=>{
+  const addProject=async create=>{
     const folder=$("#project-path").value.trim();if(!folder)return toast("Enter a directory path","error");
-    try{await post("/api/projects",{path:folder});await loadProjects();renderProjects();toast("Folder added","good")}
+    try{
+      await post("/api/projects",{path:folder,create});
+      if(create){
+        await post("/api/workspace",{workspace:folder});
+        state.draftWorkspace=folder;
+      }
+      await Promise.all([loadHealth(),loadProjects()]);
+      renderProjects();toast(create?"Folder created and selected":"Folder added","good");
+    }
     catch(e){toast(e.message,"error")}
   };
+  $("#project-add").onclick=()=>addProject(false);
+  $("#project-create").onclick=()=>addProject(true);
   $("#project-path").onkeydown=e=>{if(e.key==="Enter")$("#project-add").click()};
   $("#projects-refresh").onclick=async()=>{await loadProjects();renderProjects();toast("Projects refreshed")};
   $$("[data-activate]").forEach(b=>b.onclick=async()=>{
-    try{await post("/api/workspace",{workspace:b.dataset.activate});await Promise.all([loadHealth(),loadProjects()]);renderProjects();toast("Active folder updated","good")}
+    try{await post("/api/workspace",{workspace:b.dataset.activate});state.draftWorkspace=undefined;await Promise.all([loadHealth(),loadProjects()]);renderProjects();toast("Active folder updated","good")}
     catch(e){toast(e.message,"error")}
   });
   $$("[data-remove]").forEach(b=>b.onclick=async()=>{
@@ -779,7 +809,7 @@ function renderSettings(){
   $$(".theme-tile").forEach(b=>b.onclick=()=>{setTheme(b.dataset.theme);toast("Theme changed","good")});
   $("#motion-checkbox").onchange=e=>{localStorage.setItem(MKEY,e.target.checked?"on":"off");applyTheme()};
   $("#workspace-change").onclick=async()=>{
-    try{await post("/api/workspace",{workspace:$("#workspace-path").value.trim()});await Promise.all([loadHealth(),loadProjects()]);renderSettings();toast("Default directory saved","good")}
+    try{await post("/api/workspace",{workspace:$("#workspace-path").value.trim()});state.draftWorkspace=undefined;await Promise.all([loadHealth(),loadProjects()]);renderSettings();toast("Default directory saved","good")}
     catch(e){toast(e.message,"error")}
   };
   $("#workspace-path").onkeydown=e=>{if(e.key==="Enter")$("#workspace-change").click()};

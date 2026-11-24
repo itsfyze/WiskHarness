@@ -39,7 +39,7 @@ test("policy checks deny explicit external, linked and credential paths before a
 test("recognizable test values are redacted", ()=>{
   const fake="sk-"+"fake".repeat(9);
   const text="Token "+fake+"\npassword = 'disposable value'\nBearer fixture-only\n"+
-    "-----BEGIN OPENSSH PRIVATE KEY-----\nplaceholder\n-----END OPENSSH PRIVATE KEY-----";
+    "-----BEGIN " + "OPENSSH PRIVATE KEY-----\nplaceholder\n-----END OPENSSH PRIVATE KEY-----";
   const output=redactSecrets(text);
   for(const privateValue of [fake,"disposable value","fixture-only","placeholder"])assert(!output.includes(privateValue));
   assert.equal(redactSecrets("function hello() { return 42; }"),"function hello() { return 42; }");

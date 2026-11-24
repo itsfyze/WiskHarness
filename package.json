@@ -1,14 +1,14 @@
 {
   "name": "wiskharness",
   "private": true,
-  "version": "0.7.3-beta.3",
+  "version": "0.7.3-beta.4",
   "type": "module",
   "main": "desktop/electron-main.cjs",
   "description": "Self-hosted Windows coding assistant with local and cloud Plan models",
   "author": "WiskHarness",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check goose-runtime.mjs && node --check agent-web.mjs && node --check agent-web-mcp.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
+    "check": "node --check server.mjs && node --check agent-ollama.mjs && node --check agent-tools.mjs && node --check goose-runtime.mjs && node --check agent-web.mjs && node --check agent-web-mcp.mjs && node --check security-policy.mjs && node --check providers.mjs && node --check git-workspace.mjs && node --check profile-backup.mjs && node --check desktop/electron-main.cjs && node --check public/app.js && node --check public/workbench.js && node --check public/markdown.js && node --check public/performance.js && node --check public/chat-controls.js && node --check obsidian-checkpoint.mjs && node --check plan-chat.mjs",
     "desktop": "electron .",
     "stage:runtime": "powershell -NoProfile -ExecutionPolicy Bypass -File desktop/stage-runtime.ps1",
     "build:win": "npm run stage:runtime && electron-builder --win portable nsis --x64",
@@ -53,6 +53,8 @@
         "filter": [
           "package.json",
           "server.mjs",
+          "agent-ollama.mjs",
+          "agent-tools.mjs",
           "goose-runtime.mjs",
           "agent-web.mjs",
           "agent-web-mcp.mjs",

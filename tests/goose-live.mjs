@@ -95,7 +95,7 @@ async function api(route,body,status=200,method=body===undefined?"GET":"POST",cu
 }
 async function start(){
   child=spawn(process.execPath,["server.mjs"],{windowsHide:true,env:{...process.env,LOCAL_AGENT_PORT:String(port),
-    LOCAL_AGENT_WORKSPACE:workspace,LOCAL_AGENT_SETTINGS_DIR:config,LOCAL_AGENT_OBSIDIAN_VAULT:vault,
+    LOCAL_AGENT_ENGINE:"goose",LOCAL_AGENT_WORKSPACE:workspace,LOCAL_AGENT_SETTINGS_DIR:config,LOCAL_AGENT_OBSIDIAN_VAULT:vault,
     LOCAL_AGENT_DISABLE_OBSIDIAN_CHECKPOINT:"",WISKHARNESS_API_TOKEN:nonce,LOCAL_AGENT_OLLAMA_URL:"http://127.0.0.1:"+ollama.address().port,
     LOCAL_AGENT_GOOSE_PATH:goose},stdio:["ignore","ignore","pipe","ipc"]});
   child.stderr.setEncoding("utf8").on("data",value=>logs+=value);

@@ -24,7 +24,13 @@ For terminal/browser development, run `npm start` and open `http://127.0.0.1:431
 
 ## Releases
 
-The Windows workflow runs tests and builds all four release files on pull requests and pushes to main. Its outputs are CI artifacts. GitHub releases use the verified Windows packages and their checksums in a separate release step.
+The Windows CI workflow tests and builds packages for pull requests and pushes to main. Its artifacts are for CI inspection.
+
+For every GitHub release, review the source diff and run ./desktop/check-release-source.ps1. Stage public source only. Keep credentials, private settings, runtime profiles and personal Obsidian notes out of the commit and release assets. Commit the package and lockfile version changes, push main, then push the matching v<version> tag.
+
+Run **Publish Windows release** from main in GitHub Actions with that tag. The workflow checks the tagged source, tests and builds Setup and Portable, then adds those two EXEs and SHA256SUMS.txt to a draft. It publishes once GitHub reports matching asset sizes and hashes. It then downloads all three public assets without authentication, verifies their SHA-256 hashes and checks the repository version at the tag. Treat a failed verification as an incomplete release.
+
+To publish already verified local builds, run ./desktop/publish-release.ps1 with the pushed tag and the package directory from the clean tagged checkout. Use PowerShell 7 and an authenticated GitHub CLI. This runs the same source, artifact and public download checks. A prerelease tag publishes as a GitHub prerelease.
 
 The standalone launcher opens the native Windows uninstaller for the matching registered WiskHarness version. `--check` checks for a match without launching the uninstaller. For isolated release testing, `--silent` invokes the matching uninstaller in silent mode.
 

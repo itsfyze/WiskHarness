@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3-beta.4
+
+- Made native Ollama tool calling the default Agent engine. Models that return prose on the native path can use structured JSON compatibility.
+- Separated the current request from project memory, added per-chat workspace selection and made project creation available from the Projects view.
+- Added explicit completion checks, error recovery, cancellation and configurable model-round, tool-call and time limits.
+- Added a GitHub release workflow that checks tracked source, publishes the Windows packages and checksums, and verifies the public downloads.
+
 ## 0.7.3-beta.3
 
 - Centered the new-chat home around one composer with mode, model and performance controls. Agent home also shows attachments, permissions and Internet access.

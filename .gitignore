@@ -32,3 +32,10 @@ WiskHarness profile.json
 RELEASE-PROGRESS.md
 agent-test.txt
 test-prompt.json
+
+.obsidian/
+Obsidian/
+AI Notes/
+Personal Notes/
+.git-credentials
+credentials.json

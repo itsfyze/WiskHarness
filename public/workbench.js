@@ -192,7 +192,7 @@ export async function showSetup(onSaved, onGooseChanged) {
   const options = models.models.map(model => '<option value="'+esc(model.name)+'" '+(model.name===setup.model?"selected":"")+'>'+esc(model.name)+'</option>').join("");
   const dialog = modal("Set up WiskHarness", '<p>Choose a workspace and model for new chats. You can complete setup before adding a model.</p>'+
     card("Dependencies","Detected on this PC",'<div class="status-list" id="setup-results">'+row("Windows x64",setup.windows?"Supported":"Unsupported")+row("Ollama models",models.models.length)+'</div>'+
-      '<div class="workbench-actions">'+button("setup-check","Run dependency checks")+safeLink("https://ollama.com/download/windows","Get Ollama")+safeLink("https://goose-docs.ai/docs/getting-started/installation/","Get Goose")+'</div>')+
+      '<div class="workbench-actions">'+button("setup-check","Run dependency checks")+safeLink("https://ollama.com/download/windows","Get Ollama")+safeLink("https://goose-docs.ai/docs/getting-started/installation/","Get optional Goose runtime")+'</div>')+
     gooseRuntimePanel()+
     '<form id="setup-form"><label class="field-label" for="setup-workspace">Workspace folder</label><input class="field" id="setup-workspace" required value="'+esc(setup.workspace)+'">'+
     '<label class="field-label" for="setup-model">Default model</label><select class="field" id="setup-model"><option value="">Choose later</option>'+options+'</select>'+
@@ -249,9 +249,9 @@ async function mountSecurity(panel) {
     if(!target.isConnected)return;
     target.innerHTML='<div class="status-list">'+row("Agent process sandbox","Unavailable")+row("Agent network isolation","Unavailable")+'</div>'+
       '<p class="inline-help">Approved commands run with your Windows account and can read files, launch apps, install packages, and use the network.</p>'+
-      '<form id="security-form">'+checkbox("security-scope","Restrict explicit paths","Check paths that Goose supplies in its approval requests.",data.workspaceOnly)+
+      '<form id="security-form">'+checkbox("security-scope","Restrict explicit paths","Block structured file requests outside the workspace. Ollama Agent asks before running shell commands when this is on.",data.workspaceOnly)+
       checkbox("security-secrets","Secret protection","Block recognized credential paths in approval requests and redact recognizable values from supported logs.",data.secretProtection)+
-      '<h3>Goose approval requests</h3><p class="inline-help">These rules apply when Goose asks for approval. Shell activity and direct Goose file reads can fall outside this policy.</p>'+
+      '<h3>Tool permissions</h3><p class="inline-help">Ollama Agent checks every tool request. Goose applies these rules to the approval requests it forwards.</p>'+
       Object.entries(toolLabels).map(([key,label])=>{
         const choices=[["ask","Ask every time"],["deny","Always deny"],...(key==="read"?[["allow","Allow eligible in-workspace reads"]]:[])];
         return '<div class="setting-row security-rule"><label for="tool-'+key+'">'+label+'</label><select class="field" id="tool-'+key+'">'+choices.map(([value,title])=>'<option value="'+value+'" '+(data.toolPolicies[key]===value?"selected":"")+'>'+title+'</option>').join("")+'</select></div>';
@@ -458,9 +458,35 @@ async function mountVault(panel){
   }catch(error){target.textContent=error.message}
 }
 
+async function mountExecution(panel,onSaved) {
+  const target=panel.querySelector("#agent-execution");
+  try{
+    const {budget,engine}=await request("/api/agent/execution");
+    if(!target.isConnected)return;
+    target.innerHTML='<form><label class="field-label" for="agent-engine">Engine</label><select class="field" id="agent-engine">'+
+      '<option value="ollama">Ollama native tools</option><option value="goose">Goose ACP (legacy)</option></select>'+
+      [["rounds","Model rounds",2,100],["calls","Tool calls",1,240],["minutes","Time limit in minutes",1,60]].map(([key,label,min,max])=>
+        '<label class="field-label" for="agent-budget-'+key+'">'+label+'</label><input class="field" type="number" id="agent-budget-'+key+'" min="'+min+'" max="'+max+'" value="'+budget[key]+'" required>').join("")+
+      '<p class="inline-help">Ollama uses all three limits. Goose uses the time limit and its own model and tool limits.</p><p role="status" data-status></p><button class="btn btn-primary">Save execution settings</button></form>';
+    target.querySelector("#agent-engine").value=engine;
+    const form=target.querySelector("form");
+    form.onsubmit=async event=>{
+      event.preventDefault();
+      const button=form.querySelector("button");button.disabled=true;
+      try{
+        await request("/api/agent/execution",{engine:form.querySelector("#agent-engine").value,budget:
+          Object.fromEntries(["rounds","calls","minutes"].map(key=>[key,form.querySelector("#agent-budget-"+key).valueAsNumber]))});
+        await onSaved();
+      }catch(error){message(target,error.message)}
+      finally{button.disabled=false}
+    };
+  }catch(error){target.textContent=error.message}
+}
+
 export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChanged) {
   if (!panel) return;
   panel.querySelector(".page-heading-row").insertAdjacentHTML("afterend",
+    card("Agent execution","Engine and per-turn limits",'<div id="agent-execution">Loading execution settings…</div>')+
     gooseRuntimePanel()+
     card("Agent internet access","Public page retrieval and search",'<div data-internet-settings>Loading Internet access…</div>')+
     card("Security & permissions","Agent approvals and local data protection",'<div id="security-policy">Loading permissions…</div>')+
@@ -468,6 +494,7 @@ export async function mountSettings(panel, onSaved, onModelsChanged, onGooseChan
     card("Setup and diagnostics","Local dependencies, workspace and optional memory",button("open-setup","Open setup"))+
     card("Obsidian","Optional checkpoints for Agent work",'<div id="vault-settings">Loading Obsidian settings…</div>'));
   void mountVault(panel);
+  void mountExecution(panel,onSaved);
   panel.querySelector("#open-setup").onclick = () => void showSetup(onSaved,onGooseChanged);
   void mountGooseRuntime(panel,onGooseChanged);
   void mountInternet(panel.querySelector("[data-internet-settings]"),true);
